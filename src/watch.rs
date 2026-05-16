@@ -10,9 +10,18 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum WatchEvent {
-    Updated { collection: String, docs_added: usize },
-    Deleted { collection: String, doc_id: String },
-    Error { collection: String, message: String },
+    Updated {
+        collection: String,
+        docs_added: usize,
+    },
+    Deleted {
+        collection: String,
+        doc_id: String,
+    },
+    Error {
+        collection: String,
+        message: String,
+    },
     Stopped,
 }
 

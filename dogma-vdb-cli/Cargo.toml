@@ -1,15 +1,13 @@
 [package]
 name = "dogma-vdb-cli"
 version = "0.1.0"
-description = "CLI for dogma-vdb: watch, query, ingest, and manage .vdb collections."
+description = "CLI for dogma-vdb: query, ingest, delete, and inspect .vdb collections."
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 dogma-vdb = { path = ".." }
-dogma-vdb-embed-fastembed = { path = "../dogma-vdb-embed-fastembed" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-tokio = { version = "1", features = ["full"] }

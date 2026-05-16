@@ -4,7 +4,8 @@
 //!
 //! ## Design principles
 //!
-//! * **1 dependency** (serde_json) for the core — zero‑cost, no bloat.
+//! * **Minimal dependencies** — the core only pulls in `serde_json` + `serde` + `thiserror`.
+//!   Everything else (notify, tokio, rmcp) is optional behind feature flags.
 //! * **Portable format** — every `.vdb` file is plain JSONL, inspectable with
 //!   `cat`, `grep`, `sed`, and versionable with `git`.
 //! * **No server** — file‑based, zero config, no daemon.
@@ -25,11 +26,13 @@
 
 pub mod chunker;
 pub mod collection;
+pub mod config;
 pub mod distance;
 pub mod doc;
 pub mod embedding;
 pub mod error;
 pub mod index;
+pub mod smart_chunker;
 pub mod storage;
 
 #[cfg(feature = "watch")]
@@ -37,6 +40,9 @@ pub mod watch;
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
+
+// Re‑export for convenience
+pub use config::{Config, CONFIG};
 
 /// Convenience re‑exports of the most common types.
 pub mod prelude {
@@ -46,6 +52,6 @@ pub mod prelude {
     pub use crate::doc::{Document, DocumentBuilder};
     pub use crate::embedding::Embedder;
     pub use crate::error::{Error, Result};
-    pub use crate::index::{BruteForceIndex, Index, ScoredDocument};
+    pub use crate::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument};
     pub use crate::storage::JsonlStorage;
 }

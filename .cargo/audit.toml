@@ -1,0 +1,5 @@
+# cargo-audit configuration
+# Run with: cargo audit
+
+[advisories]
+ignore = []

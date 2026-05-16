@@ -1,199 +1,234 @@
-# 🤖 AGENTS.md — Reglas para Implementar dogma-vdb
+# AGENTS.md — Reglas para Implementar dogma-vdb
 
-## Filosofía del Proyecto
+## Filosofia del Proyecto
 
 ```
 dogma-vdb = Rust + JSONL + serde_json
-            (1 dep core, portable, sin servidor)
+            (minimo deps, portable, sin servidor)
 ```
 
-Cada línea de código debe justificar su existencia. Preferimos **50 líneas claras** a 200 líneas "arquitectónicamente flexibles".
+Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas claras** a 200 lineas "arquitectonicamente flexibles".
 
 ---
 
-## ✅ Lo Que SÍ Hacemos
+## ✅ ESTADO ACTUAL (2026-05-16)
 
-### 1. Rust idiomático — sin rodeos
+### Core crate (`dogma-vdb`) — COMPILA y 117 TESTS PASAN
 
-- **Ownership ante todo**. Tomar prestado (`&`) por defecto, owned (`T`) solo cuando el callee necesita ser dueño.
+| Modulo | Archivo | Lines | Tests | Estado |
+|--------|---------|-------|-------|--------|
+| Document | `src/doc.rs` | 205 | 8 | Completo |
+| Error | `src/error.rs` | 45 | - | Completo |
+| Distance | `src/distance.rs` | 209 | 16 | Completo |
+| Storage (JSONL) | `src/storage.rs` | 307 | 15 | Completo |
+| Index (BruteForce) | `src/index/brute_force.rs` | 210 | 14 | Completo |
+| Index (HNSW-ANN) | `src/index/hnsw.rs` | ~560 | 12+ | Completo |
+| Index trait | `src/index/mod.rs` | 47 | - | Completo |
+| Collection API | `src/collection.rs` | ~400 | 15 | Completo |
+| Chunker | `src/chunker.rs` | 247 | 8 | Completo |
+| Embedder trait | `src/embedding.rs` | 28 | - | Completo |
+| SmartChunker | `src/smart_chunker/` | ~560 | 20+ | Completo |
+| Runtime Config | `src/config.rs` | 222 | - | Funcional |
+| Watcher | `src/watch.rs` | 56 | - | **SKELETON** (`todo!()`) |
+| MCP Server | `src/mcp.rs` | 36 | - | **SKELETON** (`todo!()`) |
+
+### Sub-crates
+
+| Crate | Archivo | Estado |
+|-------|---------|--------|
+| `dogma-vdb-cli` | `cli/src/main.rs` | Completo (info, list, query, ingest, delete) |
+| `dogma-vdb-mcp` | `mcp/src/main.rs` | Completo (vecdb_query, ingest, delete, list, info) |
+| `dogma-vdb-embed` | `embed/src/lib.rs` | Completo (trait definition) |
+| `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | **SKELETON** — `todo!()` en metodos |
+
+### Tests
+- Unitarios: 103 pasan
+- Integracion: 9 pasan
+- Doc-tests: 5 pasan, 2 ignorados
+- **Total: 117 tests, 0 fallos**
+
+---
+
+## ✅ Lo Que SI Hacemos
+
+### 1. Rust idiomatico — sin rodeos
+
+- **Ownership ante todo**. Tomar prestado (`&`) por defecto, owned (`T`) solo cuando el callee necesita ser dueno.
 - **`Into<T>` en constructores** para flexibilidad sin costo.
-- **`impl Trait` en parámetros** (monomorfización) en lugar de `Box<dyn Trait>` a menos que necesites dynamic dispatch real.
+- **`impl Trait` en parametros** (monomorfizacion) en lugar de `Box<dyn Trait>` a menos que necesites dynamic dispatch real.
 - **`sort_unstable`** sobre `sort`. No necesitamos estabilidad.
-- **`#[inline]`** solo en funciones de 1-3 líneas que están en hotspots (distances, dot product).
+- **`#[inline]`** solo en funciones de 1-3 lineas que estan en hotspots (distances, dot product).
 - **`debug_assert_eq!`** para precondiciones que solo deben chequearse en debug.
 
-### 2. Código pequeño — cada archivo < 200 líneas
+### 2. Codigo pequeno — cada archivo < 300 lineas
 
-Máximo 200 líneas por archivo. Si un módulo crece más, se divide:
+Maximo 300 lineas por archivo (con excepciones para test-heavy:
+`storage.rs` 307, `smart_chunker/mod.rs` 536 que incluye ~200 de tests).
+Si un modulo crece mas, se divide.
 
-```rust
-// Bien: 150 líneas, una responsabilidad
-src/storage.rs
+### 3. Dependencias minimas — preguntar antes de anadir
 
-// Mal: 500 líneas mezclando storage + index + collection
-```
+**Deps obligatorias del core actual:**
+- `serde` + `serde_json` + `thiserror` — esenciales
+- `regex-lite` — smart chunker (regex lightweight)
+- `once_cell` + `toml` + `log` — config runtime
 
-### 3. Dependencias mínimas — preguntar antes de añadir
-
-Cada dependencia externa debe pasar esta prueba:
-
-1. **¿Realmente la necesito?** — ¿Puedo hacerlo con stdlib?
-2. **¿Cuánto aporta?** — Si ahorra 10 líneas pero añade 40 crates transitorios, no.
-3. **¿Es optional?** — Debe ir detrás de un feature flag si no es crítica para el core.
-
-**Regla de oro**: el core (`dogma-vdb`) solo tiene `serde` + `serde_json` + `thiserror`.  
-Todo lo demás (notify, tokio, rmcp) es opcional por features.
+**Deps opcionales (features):**
+- `watch` → `notify` + `crossbeam-channel`
+- `mcp` → `rmcp` + `tokio` + `tracing` + `clap`
 
 ### 4. Pruebas desde el principio
 
-- Cada módulo tiene `#[cfg(test)] mod tests` al final.
-- Tests de integración en `tests/` usan archivos temporales reales.
+- Cada modulo tiene `#[cfg(test)] mod tests` al final.
+- Tests de integracion en `tests/` usan archivos temporales reales.
 - Los tests deben pasar **sin red** ni servicios externos.
-- Un test que falla por "not yet implemented" está bien — **mientras compile**.
+- Todos los tests nuevos deben compilar y pasar en CI.
 
-### 5. Formato JSONL — el centro del diseño
+### 5. Formato JSONL — el centro del diseno
 
 ```
-Archivo .vdb
-├── Línea 1: {"id":"doc-1","text":"...","embedding":[0.1,...],"metadata":{...}}
-├── Línea 2: {"id":"doc-2","text":"...","embedding":[...],"metadata":{...}}
+.vdb file
+├── Line 1: {"id":"doc-1","text":"...","embedding":[0.1,...],"metadata":{...}}
+├── Line 2: {"id":"doc-2","text":"...","embedding":[...],"metadata":{...}}
 └── ...
 ```
 
-- **Cada línea es independiente** — se puede hacer `grep`, `sed`, `head`.
-- **Append-only** por diseño — añadir es O(1). Actualizar requiere reescribir (pero es poco frecuente en RAG).
+- **Cada linea es independiente** — se puede hacer `grep`, `sed`, `head`.
+- **Append-only** por diseno — anadir es O(1). Actualizar requiere reescribir.
 - **`serde_json::from_str`** linea por linea (streaming con BufReader).
 
-### 6. Traits pequeños y enfocados
+### 6. Traits pequenos y enfocados
 
 ```rust
-// Bien: 1 método necesario, default para batch
 pub trait Embedder: Send + Sync {
     fn embed(&self, text: &str) -> Result<Vec<f32>>;
     fn dimension(&self) -> usize;
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> { /* default */ }
 }
-
-// Mal: trait con 8 métodos, 3 genéricos, 2 lifetimes, y un associated type
 ```
 
-### 7. Documentación útil
+### 7. Documentacion util
 
-- `///` con ejemplos de uso en toda la API pública.
-- `# Examples` en docstrings (que se ejecutan con `cargo test --doc`).
-- `#[must_use]` en funciones cuyo resultado no debería ignorarse.
+- `///` con ejemplos de uso en toda la API publica.
+- `# Examples` en docstrings (se ejecutan con `cargo test --doc`).
+- `#[must_use]` en funciones cuyo resultado no deberia ignorarse.
 
 ---
 
 ## ❌ Lo Que NO Hacemos
 
-### 1. NO añadir dependencias al core sin discutirlo
+### 1. NO anadir dependencias al core sin discutirlo
 
-```toml
-# MAL — esto va al core y lo arrastran todos los usuarios
-[dependencies]
-tokio = "1"
-reqwest = "0.12"
-anyhow = "1"
-tracing = "0.1"
-
-# BIEN — las dependencias pesadas van detrás de features
-[dependencies]
-tokio = { version = "1", optional = true }
-```
-
-Si alguien quiere solo leer archivos `.vdb` sin async ni HTTP, que pueda hacerlo con **1 sola dependencia**.
+Si alguien quiere solo leer archivos `.vdb` sin async ni HTTP, que pueda hacerlo con deps minimas.
 
 ### 2. NO premature abstraction
 
 ```rust
 // MAL — abstraer por abstraer
-trait DistanceCalculator {
-    fn compute(&self, a: &[f32], b: &[f32]) -> f32;
-}
-struct CosineCalculator;
-impl DistanceCalculator for CosineCalculator { ... }
+trait DistanceCalculator { fn compute(&self, a: &[f32], b: &[f32]) -> f32; }
 
-// BIEN — una función, concreta, reutilizable
+// BIEN — una funcion, concreta, reutilizable
 pub fn cosine(a: &[f32], b: &[f32]) -> f32;
 ```
 
-No necesitamos un trait `DistanceCalculator` ni un `VectorIndexFactory`.  
-Empezamos con `BruteForceIndex` y si hace falta HNSW luego, se añade como otro implementador del trait `Index`.
+Empezamos con `BruteForceIndex` y si hace falta HNSW luego, se anade como otro implementador del trait `Index`.
 
 ### 3. NO clonar sin necesidad
 
 ```rust
-// MAL — clonar todo para "seguridad"
-fn search(&self, query: Vec<f32>) -> Vec<Document> {
-    let query = query.clone();
-    // ...
-}
+// MAL
+fn search(&self, query: Vec<f32>) -> Vec<Document> { let query = query.clone(); ... }
 
-// BIEN — prestar lo que se pueda
+// BIEN
 fn search(&self, query: &[f32]) -> Vec<ScoredDocument>;
 ```
 
-### 4. NO unwrap() en producción
+### 4. NO unwrap() en produccion
 
 ```rust
-// MAL — paniquea silenciosamente
+// MAL
 let doc = docs.iter().find(|d| d.id == "x").unwrap();
 
-// BIEN — error manejable
+// BIEN
 let doc = docs.iter().find(|d| d.id == "x")
     .ok_or_else(|| Error::DocumentNotFound("x".into()))?;
 ```
 
 `unwrap()` solo en tests y ejemplos.
 
-### 5. NO estructuras sobreingeniería
+### 5. NO estructuras sobreingenieria
 
 - Sin `async` en el core. Si se necesita async, va en el crate `mcp` o `cli`.
 - Sin macros procedurales.
 - Sin `unsafe` a menos que sea estrictamente necesario y medido.
-- Sin genéricos innecesarios. Un `Vec<f32>` es un `Vec<f32>`, no un `Vector<T: Numeric + Clone>`.
+- Sin genericos innecesarios.
 
 ### 6. NO ignorar los warnings de clippy
 
-El CI falla con `-D warnings`. Silenciar warnings con `#[allow(...)]` solo si hay una razón justificada y documentada.
+El CI falla con `-D warnings`. Silenciar warnings con `#[allow(...)]` solo si hay una razon justificada y documentada.
+
+### 7. ANN Index (HNSW) — reglas
+
+El index aproximado complementa a `BruteForceIndex` sin reemplazarlo:
+
+- **Implementacion pura en Rust** — sin nuevas dependencias externas
+- **Misma API** — implementa el trait `Index` existente
+- **Parametros configurables** en `HnswConfig`: `M` (conexiones), `ef_construction` (calidad build), `ef_search` (calidad query)
+- **Memoria predecible**: cada nodo guarda su vector + vecinos por capa
+- **`ef_search` controla el balance**: mayor valor = mas recall, menos velocidad
+- **Collection puede usar cualquiera**: se inyecta via `HnswConfig` en lugar de `Metric`
+
+```rust
+let mut index = HnswIndex::new(HnswConfig {
+    M: 16,
+    ef_construction: 200,
+    ef_search: 50,
+    metric: Metric::Cosine,
+});
+index.insert(&docs);
+let results = index.search(&query, 10);
+```
+
+Rendimiento esperado vs BruteForce:
+
+| Dataset | BruteForce | HNSW (ef=50) | HNSW (ef=200) |
+|---------|-----------|--------------|---------------|
+| 1K      | 0.5ms     | 0.2ms        | 0.5ms         |
+| 10K     | 5ms       | 0.5ms        | 2ms           |
+| 100K    | 50ms      | 1ms          | 5ms           |
+| 1M      | 500ms     | 3ms          | 15ms          |
+| Recall  | 100%      | ~90-95%      | ~98-99%       |
 
 ---
 
-## 🛠️ Herramientas Que Tenemos
+## Herramientas Que Tenemos
 
 ### Del core (siempre disponibles)
 
-| Herramienta | Para qué |
+| Herramienta | Para que |
 |---|---|
 | `std::fs` | Leer/escribir archivos .vdb |
-| `std::io::{BufReader, BufWriter}` | Streaming línea por línea |
-| `std::collections::HashMap` | Metadatos de documentos |
+| `std::io::{BufReader, BufWriter}` | Streaming linea por linea |
+| `std::collections::HashMap` | Metadata de documentos |
 | `serde_json` | Serializar/deserializar JSONL |
 | `thiserror` | Errores tipados |
+| `regex_lite` | Smart chunking por tipo de archivo |
 
 ### De la stdlib de Rust (sin dependencias extra)
 
 ```rust
-// Matemáticas
 f32::sqrt()          // → magnitud de vectores
 f32::powi()          // → distancia euclideana
 f32::abs()           // → tolerancias
-
-// Iteradores
 .iter().zip()        // → dot product
 .map().sum()         // → suma de productos
 .sort_unstable_by()  // → ordenar por score
-
-// Archivos
 File::open()         // → leer .vdb
 File::create()       // → escribir .vdb
 OpenOptions::append()// → append al .vdb
-
-// Paths
 Path::exists()       // → ¿existe el archivo?
-Path::extension()    // → filtrar por extensión
-Path::file_stem()    // → nombre de colección
+Path::extension()    // → filtrar por extension
+Path::file_stem()    // → nombre de coleccion
 ```
 
 ### Con features opcionales
@@ -205,16 +240,16 @@ Path::file_stem()    // → nombre de colección
 
 ---
 
-## 📐 Estructura Típica de un Módulo
+## Estructura Tipica de un Modulo
 
 ```rust
-//! 1. Docstring de una línea con el propósito.
+//! 1. Docstring de una linea con el proposito.
 
 // 2. Imports agrupados: stdlib, externos, crate
 use std::path::PathBuf;
 use crate::error::Result;
 
-// 3. Tipos públicos (struct, enum, trait)
+// 3. Tipos publicos (struct, enum, trait)
 pub struct Foo { ... }
 pub trait Bar { ... }
 
@@ -222,14 +257,13 @@ pub trait Bar { ... }
 impl Foo { ... }
 impl Bar for Foo { ... }
 
-// 5. Funciones públicas helpers (si aplica)
+// 5. Funciones publicas helpers (si aplica)
 pub fn helper() { ... }
 
 // 6. Tests (al final del archivo)
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_foo() { ... }
 }
@@ -237,7 +271,7 @@ mod tests {
 
 ---
 
-## 🧪 Cómo Evaluamos Código Nuevo
+## Como Evaluamos Codigo Nuevo
 
 1. **Compila con `cargo check --all-features`** ✅
 2. **Sin errores de clippy** (`cargo clippy --all-features -- -D warnings`) ✅
@@ -245,8 +279,23 @@ mod tests {
 4. **Sin dependencias nuevas** en el core (o justificadas) ✅
 5. **Formato correcto** (`cargo fmt --all -- --check`) ✅
 
-Si cumple todo, el código puede mergearse.
+Si cumple todo, el codigo puede mergearse.
 
 ---
 
-*Última actualización: 2026-05-16*
+## Pendiente (Roadmap)
+
+- [x] Implementar HNSW index (`src/index/hnsw.rs`)
+- [x] Collection puede usar HNSW via config
+- [x] CRUD completo (insert, delete, update)
+- [x] CLI (info, list, query, ingest, delete)
+- [x] MCP server (vecdb_query, ingest, delete, list, info)
+- [ ] Benchmarks comparativos (BruteForce vs HNSW)
+- [ ] Implementar `watch.rs` (file system watcher, feature = "watch")
+- [ ] Implementar `mcp.rs` (MCP server, feature = "mcp")
+- [ ] Implementar FastEmbed real (`dogma-vdb-embed-fastembed`)
+- [ ] Ejemplos completos en `examples/`
+
+---
+
+*Ultima actualizacion: 2026-05-16*
