@@ -426,6 +426,21 @@ impl Index for HnswIndex {
         deleted
     }
 
+    fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &dyn Fn(&Document) -> bool,
+    ) -> Vec<ScoredDocument> {
+        // Higher multiplier because HNSW is approximate and we post-filter
+        let multiplier = (k * 5).max(self.config.ef_search * 2);
+        self.search(query, multiplier)
+            .into_iter()
+            .filter(|r| filter(&r.document))
+            .take(k)
+            .collect()
+    }
+
     fn search(&self, query: &[f32], k: usize) -> Vec<ScoredDocument> {
         self.search(query, k)
     }

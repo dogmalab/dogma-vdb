@@ -173,6 +173,43 @@ impl Collection {
         self.index.search(query, k)
     }
 
+    /// Search with a metadata / content filter.
+    ///
+    /// Only documents matching `filter` are considered.
+    ///
+    /// # Example
+    /// ```
+    /// use dogma_vdb::prelude::*;
+    /// use dogma_vdb::filter;
+    ///
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let mut col = Collection::open(dir.path().join("filter.vdb")).unwrap();
+    /// col.insert(
+    ///     Document::builder("a", "rust is fast")
+    ///         .embedding(vec![1.0, 0.0])
+    ///         .metadata("lang", "en")
+    ///         .build()
+    /// ).unwrap();
+    /// col.insert(
+    ///     Document::builder("b", "rust es rapido")
+    ///         .embedding(vec![0.0, 1.0])
+    ///         .metadata("lang", "es")
+    ///         .build()
+    /// ).unwrap();
+    ///
+    /// let results = col.search_filtered(&[1.0, 0.0], 5, &filter::metadata_eq("lang", "en"));
+    /// assert_eq!(results.len(), 1);
+    /// assert_eq!(results[0].document.id, "a");
+    /// ```
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &dyn Fn(&Document) -> bool,
+    ) -> Vec<ScoredDocument> {
+        self.index.search_filtered(query, k, filter)
+    }
+
     /// Iterate over all documents.
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
         self.index.documents().iter()
@@ -412,5 +449,83 @@ mod tests {
         let col = Collection::open(&path).unwrap();
         assert_eq!(col.len(), 1);
         assert_eq!(col.documents().next().unwrap().id, "a");
+    }
+
+    #[test]
+    fn test_search_filtered_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filter_test.vdb");
+        let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+
+        col.insert(
+            Document::builder("en1", "hello")
+                .embedding(vec![1.0, 0.0, 0.0])
+                .metadata("lang", "en")
+                .build(),
+        )
+        .unwrap();
+        col.insert(
+            Document::builder("en2", "world")
+                .embedding(vec![0.0, 1.0, 0.0])
+                .metadata("lang", "en")
+                .build(),
+        )
+        .unwrap();
+        col.insert(
+            Document::builder("es1", "hola")
+                .embedding(vec![0.0, 0.0, 1.0])
+                .metadata("lang", "es")
+                .build(),
+        )
+        .unwrap();
+
+        // Filter for English only
+        let results = col.search_filtered(&[1.0, 0.0, 0.0], 5, &|doc: &Document| {
+            doc.metadata_val("lang") == Some("en")
+        });
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.document.metadata_val("lang"), Some("en"));
+        }
+    }
+
+    #[test]
+    fn test_search_filtered_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filter_none.vdb");
+        let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+
+        col.insert(
+            Document::builder("a", "text")
+                .embedding(vec![1.0, 0.0])
+                .metadata("lang", "en")
+                .build(),
+        )
+        .unwrap();
+
+        let results = col.search_filtered(&[1.0, 0.0], 5, &|doc: &Document| {
+            doc.metadata_val("lang") == Some("es")
+        });
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_filtered_no_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filter_no_meta.vdb");
+        let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+
+        col.insert(
+            Document::builder("a", "no metadata")
+                .embedding(vec![1.0, 0.0])
+                .build(),
+        )
+        .unwrap();
+
+        // Filter for a key that doesn't exist
+        let results = col.search_filtered(&[1.0, 0.0], 5, &|doc: &Document| {
+            doc.metadata_val("lang").is_some()
+        });
+        assert!(results.is_empty());
     }
 }

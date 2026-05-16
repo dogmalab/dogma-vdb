@@ -31,6 +31,7 @@ pub mod distance;
 pub mod doc;
 pub mod embedding;
 pub mod error;
+pub mod filter;
 pub mod index;
 pub mod smart_chunker;
 pub mod storage;

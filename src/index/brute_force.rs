@@ -82,6 +82,39 @@ impl Index for BruteForceIndex {
         before - self.documents.len()
     }
 
+    fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &dyn Fn(&Document) -> bool,
+    ) -> Vec<ScoredDocument> {
+        if self.documents.is_empty() || k == 0 {
+            return Vec::new();
+        }
+
+        let mut results: Vec<ScoredDocument> = self
+            .documents
+            .iter()
+            .filter(|d| !d.embedding.is_empty())
+            .filter(|d| filter(d))
+            .map(|d| {
+                let score = crate::distance::score(&d.embedding, query, self.metric);
+                ScoredDocument {
+                    score,
+                    document: d.clone(),
+                }
+            })
+            .collect();
+
+        results.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(k);
+        results
+    }
+
     fn len(&self) -> usize {
         self.documents.len()
     }

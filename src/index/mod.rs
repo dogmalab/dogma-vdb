@@ -39,6 +39,25 @@ pub trait Index: Send + Sync {
     /// Return a reference to all stored documents.
     fn documents(&self) -> &[Document];
 
+    /// Search with a metadata / content filter.
+    ///
+    /// Only documents for which `filter` returns `true` are considered.
+    /// The default implementation post-filters the regular search results;
+    /// override for more efficient pre-filtering.
+    fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &dyn Fn(&Document) -> bool,
+    ) -> Vec<ScoredDocument> {
+        // Default: post-filter (safe approximation)
+        self.search(query, k * 3)
+            .into_iter()
+            .filter(|r| filter(&r.document))
+            .take(k)
+            .collect()
+    }
+
     /// Number of indexed documents.
     fn len(&self) -> usize;
 
