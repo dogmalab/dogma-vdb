@@ -1,0 +1,12 @@
+[package]
+name = "dogma-vdb-embed-fastembed"
+version = "0.1.0"
+description = "Fastembed (ONNX) implementation of the dogma-vdb Embedder trait."
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dogma-vdb-embed = { path = "../dogma-vdb-embed" }
+fastembed = "4"
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -1,0 +1,20 @@
+# cargo-deny configuration.
+# Install: cargo install cargo-deny
+# Run:     cargo deny check
+
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "deny"
+allow-git = []
