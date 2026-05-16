@@ -14,7 +14,15 @@ pub struct ChunkerConfig {
     pub separator: String,
 }
 
-impl Default for ChunkerConfig;
+impl Default for ChunkerConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: 512,
+            overlap: 64,
+            separator: "\n\n".into(),
+        }
+    }
+}
 
 /// Splits long texts into overlapping chunks.
 ///
@@ -32,17 +40,52 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    pub fn new(config: ChunkerConfig) -> Self;
-    pub fn chunk(&self, text: &str) -> Vec<String>;
+    pub fn new(config: ChunkerConfig) -> Self {
+        todo!()
+    }
+
+    pub fn chunk(&self, text: &str) -> Vec<String> {
+        let _ = text;
+        todo!()
+    }
+
     pub fn chunk_to_docs(
         &self,
         text: &str,
         base_id: &str,
         metadata: HashMap<String, String>,
-    ) -> Vec<Document>;
+    ) -> Vec<Document> {
+        let _ = (text, base_id, metadata);
+        todo!()
+    }
 }
 
-impl Default for Chunker;
+impl Default for Chunker {
+    fn default() -> Self {
+        Self::new(ChunkerConfig::default())
+    }
+}
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunk_short_text() {
+        let chunker = Chunker::default();
+        let chunks = chunker.chunk("corto");
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_chunk_long_text() {
+        let text = "A".repeat(2000);
+        let chunker = Chunker::new(ChunkerConfig {
+            chunk_size: 500,
+            overlap: 50,
+            separator: "\n".into(),
+        });
+        let chunks = chunker.chunk(&text);
+        assert!(chunks.len() >= 4);
+    }
+}

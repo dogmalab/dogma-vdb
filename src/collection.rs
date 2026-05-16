@@ -7,7 +7,7 @@ use crate::distance::Metric;
 use crate::doc::Document;
 use crate::embedding::Embedder;
 use crate::error::Result;
-use crate::index::{BruteForceIndex, Index, ScopedDocument};
+use crate::index::{BruteForceIndex, ScoredDocument};
 use crate::storage::JsonlStorage;
 use std::path::PathBuf;
 
@@ -31,21 +31,36 @@ pub struct Collection {
 
 impl Collection {
     /// Open (or create) a collection from a `.vdb` path.
-    pub fn open(path: impl Into<PathBuf>) -> Result<Self>;
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let _ = path;
+        todo!()
+    }
 
     /// The collection name (derived from the file stem).
-    pub fn name(&self) -> &str;
+    pub fn name(&self) -> &str {
+        todo!()
+    }
 
     /// Number of documents in the collection.
-    pub fn len(&self) -> usize;
+    pub fn len(&self) -> usize {
+        todo!()
+    }
 
-    pub fn is_empty(&self) -> bool;
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Insert a single document and persist immediately.
-    pub fn insert(&mut self, doc: Document) -> Result<()>;
+    pub fn insert(&mut self, doc: Document) -> Result<()> {
+        let _ = doc;
+        todo!()
+    }
 
     /// Insert many documents at once (single persist).
-    pub fn insert_batch(&mut self, docs: &[Document]) -> Result<()>;
+    pub fn insert_batch(&mut self, docs: &[Document]) -> Result<()> {
+        let _ = docs;
+        todo!()
+    }
 
     /// Search with an embedder: embed the query text, then search.
     pub fn search_query(
@@ -54,14 +69,32 @@ impl Collection {
         text: &str,
         k: usize,
         metric: Metric,
-    ) -> Result<Vec<ScoredDocument>>;
+    ) -> Result<Vec<ScoredDocument>> {
+        let _ = (embedder, text, k, metric);
+        todo!()
+    }
 
     /// Search directly with a query vector.
-    pub fn search(&self, query: &[f32], k: usize, metric: Metric) -> Vec<ScoredDocument>;
+    pub fn search(&self, query: &[f32], k: usize, metric: Metric) -> Vec<ScoredDocument> {
+        let _ = (query, k, metric);
+        todo!()
+    }
 
     /// Iterate over all documents.
-    pub fn documents(&self) -> impl Iterator<Item = &Document>;
+    pub fn documents(&self) -> impl Iterator<Item = &Document> {
+        self.index.documents().iter()
+    }
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.vdb");
+        let col = Collection::open(&path).unwrap();
+        assert!(col.is_empty());
+    }
+}

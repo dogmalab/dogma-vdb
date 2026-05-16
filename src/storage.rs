@@ -29,30 +29,67 @@ impl JsonlStorage {
     ///
     /// The file is **not** created or opened until `load` / `store` /
     /// `append` is called.
-    pub fn new(path: impl Into<PathBuf>) -> Self;
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        todo!()
+    }
 
     /// The underlying file path.
-    pub fn path(&self) -> &Path;
+    pub fn path(&self) -> &Path {
+        todo!()
+    }
 
     /// Load **all** documents from the file.
     ///
     /// Lines are streamed lazily via `BufReader`; peak memory is
     /// proportional to the file size because all documents are
     /// returned.
-    pub fn load(&self) -> Result<Vec<Document>>;
+    pub fn load(&self) -> Result<Vec<Document>> {
+        todo!()
+    }
 
     /// Overwrite the file with the given documents.
-    pub fn store(&self, docs: &[Document]) -> Result<()>;
+    pub fn store(&self, docs: &[Document]) -> Result<()> {
+        let _ = docs;
+        todo!()
+    }
 
     /// Append a single document to the end of the file.
-    pub fn append(&self, doc: &Document) -> Result<()>;
+    pub fn append(&self, doc: &Document) -> Result<()> {
+        let _ = doc;
+        todo!()
+    }
 
     /// Whether the file already exists on disk.
-    pub fn exists(&self) -> bool;
+    pub fn exists(&self) -> bool {
+        todo!()
+    }
 
     /// Number of non‑empty lines (documents) in the file.
-    pub fn count(&self) -> Result<usize>;
+    pub fn count(&self) -> Result<usize> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.vdb");
+        let storage = JsonlStorage::new(&path);
+
+        let docs = vec![
+            Document::new("a", "texto a"),
+            Document::new("b", "texto b"),
+        ];
+        storage.store(&docs).unwrap();
+        assert!(storage.exists());
+
+        let loaded = storage.load().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "a");
+    }
+}

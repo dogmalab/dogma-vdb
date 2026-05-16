@@ -30,16 +30,24 @@ impl Document {
     }
 
     /// Quick constructor for a document without an embedding.
-    pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self;
+    pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
+        todo!()
+    }
 
     /// Dimensionality of the embedding vector.
-    pub fn dimension(&self) -> usize;
+    pub fn dimension(&self) -> usize {
+        todo!()
+    }
 
     /// Returns `true` if the embedding is non‑empty.
-    pub fn is_embedded(&self) -> bool;
+    pub fn is_embedded(&self) -> bool {
+        todo!()
+    }
 
     /// Look up a metadata value by key.
-    pub fn metadata_val(&self, key: &str) -> Option<&str>;
+    pub fn metadata_val(&self, key: &str) -> Option<&str> {
+        todo!()
+    }
 }
 
 /// Fluent builder for [`Document`].
@@ -63,8 +71,19 @@ pub struct DocumentBuilder {
 }
 
 impl DocumentBuilder {
-    pub fn embedding(mut self, v: Vec<f32>) -> Self;
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self;
-    pub fn metadatas(mut self, m: HashMap<String, String>) -> Self;
-    pub fn build(self) -> Document;
+    pub fn embedding(mut self, v: Vec<f32>) -> Self {
+        todo!()
+    }
+
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        todo!()
+    }
+
+    pub fn metadatas(mut self, m: HashMap<String, String>) -> Self {
+        todo!()
+    }
+
+    pub fn build(self) -> Document {
+        todo!()
+    }
 }

@@ -26,11 +26,11 @@ pub enum McpTransport {
 ///
 /// The server reads JSON‑RPC 2.0 requests from stdin and writes
 /// responses to stdout.
-pub async fn serve_stdio(config: McpConfig) -> Result<()> {
+pub async fn serve_stdio(_config: McpConfig) -> Result<()> {
     todo!()
 }
 
 /// Run the MCP server over HTTP / WebSocket.
-pub async fn serve_http(config: McpConfig) -> Result<()> {
+pub async fn serve_http(_config: McpConfig) -> Result<()> {
     todo!()
 }

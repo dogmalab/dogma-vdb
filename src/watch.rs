@@ -4,7 +4,6 @@
 //! modified files, and updates the `.vdb` collection automatically.
 
 use crate::error::Result;
-use crossbeam_channel::Receiver;
 use std::path::PathBuf;
 
 /// Events emitted by the background watcher.
@@ -27,12 +26,22 @@ pub struct WatchConfig {
     pub initial_scan: bool,
 }
 
-impl Default for WatchConfig;
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            source_dirs: vec![],
+            extensions: vec!["md".into(), "txt".into(), "rs".into()],
+            output: PathBuf::from("default.vdb"),
+            debounce_ms: 500,
+            initial_scan: true,
+        }
+    }
+}
 
 /// Start the file watcher on a background thread.
 ///
 /// Returns a `Receiver<WatchEvent>` that yields events as files are
 /// created, modified, or deleted.
-pub fn start_watching(config: WatchConfig) -> Result<Receiver<WatchEvent>> {
+pub fn start_watching(_config: WatchConfig) -> Result<crossbeam_channel::Receiver<WatchEvent>> {
     todo!()
 }
