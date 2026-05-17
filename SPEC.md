@@ -178,7 +178,30 @@ sq = false
 
 ---
 
-## 7. Criterios de Aceptacion
+## 8. Modelo de Seguridad
+
+dogma-vdb es una herramienta **CLI local / libreria embebible**:
+
+| Componente | Exposicion | Riesgo |
+|-----------|-----------|--------|
+| Core library | Ninguna (solo codigo usuario) | 0 |
+| CLI | Local, usuario invoca explicitamente | 0 |
+| MCP stdio | Procesos locales que el usuario autoriza | Bajo |
+| MCP HTTP | **No implementado** — skeleton con `todo!()` | N/A |
+| Watcher | Directorios que el usuario configura | Bajo |
+| fastembed | Descarga modelos de HuggingFace | Bajo (sin verificar checksum) |
+
+**Principios**:
+- No `unsafe` en codigo de produccion (0 bloques)
+- Sin ejecucion de comandos del sistema
+- Sin secretos hardcodeados
+- Sin red en el core (el MCP server es opcional y stdio por defecto)
+
+Si en el futuro se implementa `serve_http`, se anadiran:
+- Path whitelist para operaciones de filesystem
+- Autenticacion basica o bearer token
+- Rate limiting
+
 
 | Escenario | Backend | Given | When | Then |
 |-----------|---------|-------|------|------|

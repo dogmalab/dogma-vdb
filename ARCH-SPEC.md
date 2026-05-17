@@ -339,3 +339,61 @@ RAM estimada para 100K docs 384-dim:
 3. **SQ integration** en BruteForce y HNSW (~1 sesion)
 4. **Annoy** (nuevo backend completo, ~2 sesiones)
 5. **Benchmarks** actualizados con todos los backends (~0.5 sesion)
+
+---
+
+## 11. Enriquecimiento Futuro (Post-Beta)
+
+### 11.1. Seguridad
+
+| Item | Prioridad | Descripcion |
+|------|:---------:|-------------|
+| MCP HTTP auth | Media | Si se implementa `serve_http`, anadir path whitelist y autenticacion basica. El MCP stdio actual solo expone herramientas a procesos locales, no hay superficie de ataque |
+| Watcher path sandbox | Baja | Validar que `source_dirs` este dentro de un directorio base configurado. Actualmente el usuario configura los directorios, no hay riesgo real en CLI local |
+| Model checksum verification | Baja | Verificar checksum SHA256 de modelos ONNX descargados. Depende de `fastembed` que lo implemente upstream |
+| Audit CI hardening | Baja | Configurar `cargo audit` para fallar solo en vulnerabilidades reales (no warnings de mantenimiento). Actualmente es correcto |
+
+### 11.2. Rendimiento y Escalabilidad
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **Memory-mapped embeddings** | Alto | Cargar embeddings via mmap en vez de Vec<f32>. Permite colecciones > RAM disponible. ~2-3 sesiones |
+| **IVF index** | Medio | K-means + busqueda en clusters. Alternativa a HNSW para datasets estaticos. ~1-2 sesiones |
+| **SIMD completo en BF search** | Bajo | BF search ya usa rayon para paralelismo. SIMD adicional marginal. Ya implementado via `wide` |
+| **Parallel HNSW build** | Bajo | HNSW es inherentemente secuencial por documento. No se puede paralelizar |
+
+### 11.3. Formatos y Portabilidad
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **Formato Parquet** | Medio | Export a Apache Parquet para interoperabilidad con data science. Dependencia opcional |
+| **Import desde ChromaDB/LanceDB** | Medio | Script de migracion desde otros formatos de vectores. ~1 sesion |
+| **Formato binario v2 con compresion** | Bajo | Anadir compresion zstd opcional al formato binario actual |
+
+### 11.4. Integraciones
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **Python bindings (PyO3)** | Alto | `pip install dogma-vdb` con API Python completa. ~3-4 sesiones |
+| **LangChain VectorStore nativo** | Alto | Provider Python que implementa VectorStore de LangChain usando MCP subprocess. ~1 sesion |
+| **Embedding models adicionales** | Medio | Soportar modelos ONNX distintos a MiniLM-L6-v2 (BGE, GTE, etc.) |
+| **Llamarada / mistral.rs** | Medio | Embedding via llama.cpp para modelos locales (alternativa ligera a ONNX) |
+
+### 11.5. Operaciones
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **CRUD update eficiente** | Medio | Actualmente delete+insert reescribe todo el archivo binario. Hacer update in-place |
+| **Snapshot / versionado** | Bajo | Mantener N versiones anteriores del .vdb para rollback |
+| **CLI en REPl** | Bajo | Modo interactivo para explorar colecciones desde terminal |
+| **Estadisticas de coleccion** | Bajo | Reportar distribucion de vectores, outliers, clustering |
+
+### 11.6. Testing y CI
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **Fuzz testing** | Medio | Fuzzing de entrada de datos (embeddings malformados, metadata corrupta) |
+| **Benchmarks en CI** | Bajo | Ejecutar bench.rs en CI y comparar con commit anterior para detectar regresiones |
+| **Test de integracion MCP** | Bajo | Test E2E que inicia MCP server, conecta, hace queries |
+| **Proptest para indices** | Bajo | Test propiedad: search(k) siempre devuelve <= k resultados |
+

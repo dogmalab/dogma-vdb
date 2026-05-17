@@ -2,23 +2,28 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: Alpha — core compiles, **152 tests pass**. 4 index backends
-(BruteForce, HNSW, Annoy, SQ), CLI, MCP server, file watcher.
+**Status**: Beta — core compiles, **155 tests pass**, SIMD-accelerated,
+binary native format, 4 index backends, CLI, MCP server, file watcher,
+FastEmbed ONNX integration, LangChain MCP adapter.
 
 ## Features
 
 - **SIMD-accelerated** — dot product, cosine, and euclidean via `wide` crate
-  (SSE/AVX2 on x86, NEON on ARM). HNSW search ~3.5x faster, build ~4x.
+  (SSE/AVX2 on x86, NEON on ARM). HNSW search ~3.6x faster, build ~4.3x.
+- **Binary native format** — header + metadata + raw f32 embeddings contiguous.
+  ~2.3x smaller, ~7x faster save/load vs JSONL. Auto-migration from old format.
 - **4 index backends**: BruteForce (exact), HNSW (approximate graph),
   Annoy (random projection forest), SQ (scalar quantization — orthogonal)
 - **Flat embeddings**: contiguous `Vec<f32>` for ~2.5× speedup at scale
-- **SQ (i8 quantization)**: ~4× less memory, ~2× faster distance, optional rescore
+- **SQ (i8 quantization)**: ~4× less memory, optional f32 rescore
 - **CRUD**: insert, batch insert, delete, update
 - **Metadata filtering**: `metadata_eq`, `metadata_contains`, `metadata_exists`, `all_of`
-- **JSONL format**: debuggable with `cat`, `grep`, `sed`, versionable with `git`
+- **JSONL export**: `collection.export_jsonl()` for debug with `cat`, `grep`, `sed`
 - **No server**: file-based, zero config, no daemon
 - **MCP-ready**: optional MCP server (stdio) for Claude Desktop / Cursor / opencode
+- **LangChain MCP adapter**: `examples/langchain_mcp.py` — zero-code integration
 - **Watch mode**: optional file watcher for auto-reindexing
+- **FastEmbed ONNX**: `FastEmbedder` with all-MiniLM-L6-v2 (384-dim, ~90MB model)
 - **Pure Rust**: HNSW, Annoy, SQ algorithms are custom implementations
 
 ## Quick Start
@@ -26,22 +31,32 @@ Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 ```rust
 use dogma_vdb::prelude::*;
 
-// Collection opens (or creates) a .vdb file, index type from config
 let mut col = Collection::open("my_data.vdb")?;
 col.insert(Document::new("doc-1", "Rust is fast"))?;
 let results = col.search(&[0.1, 0.2, 0.3], 5);
+
+// Export for debugging
+col.export_jsonl("my_data.jsonl")?;
 ```
 
-## Benchmarks (5K docs, 128-dim)
+## Benchmarks (5K docs, 128-dim, SIMD on)
 
-| Backend | us/query | Recall |
-|---------|:--------:|:------:|
-| BruteForce | 1,542 | 100% |
-| HNSW (ef=50) | 38 | 100% |
-| HNSW+Flat | 43 | 100% |
-| HNSW+SQ | 65 | ~95% (w/ rescore) |
-| Annoy (10 trees) | 3,942 | 100% |
-| BF+SQ | 1,569 | ~95% (w/ rescore) |
+| Backend | us/query | Recall | Notes |
+|---------|:--------:|:------:|-------|
+| HNSW (ef=50) | **77** | 100% | 3.6x vs no-SIMD |
+| HNSW+SQ | 71 | 0-60% | 4x menos RAM |
+| HNSW+Flat | 79 | 100% | Cache win >100K |
+| BruteForce | 1,460 | 100% | Exacto |
+| BF+SQ | 1,584 | 40% | 4x menos RAM |
+| Annoy (10 trees) | 3,216 | 100% | Build 3ms |
+
+**Build time**: HNSW 1.5s (4.3x vs no-SIMD), Annoy 3ms
+
+**Storage benchmark** (5K docs 384-dim):
+| Format | Size | Save | Load |
+|--------|:---:|:----:|:----:|
+| Binary | 8.2 MB | 7.1 ms | 9.1 ms |
+| JSONL | 18.6 MB | 55 ms | 57 ms |
 
 ## Config
 
@@ -79,7 +94,7 @@ sq_rescore = false
 | Crate | Description |
 |-------|-------------|
 | `dogma-vdb` | Core library (storage, index, collection, chunking) |
-| `dogma-vdb-cli` | CLI tool (info, list, query, ingest, delete) |
+| `dogma-vdb-cli` | CLI tool (info, list, query, ingest, delete, export) |
 | `dogma-vdb-embed` | Embedder trait definition |
 | `dogma-vdb-embed-fastembed` | Fastembed (ONNX) integration (384-dim MiniLM-L6-v2) |
 | `dogma-vdb-mcp` | MCP server over stdio |
@@ -87,12 +102,22 @@ sq_rescore = false
 ## Build & Test
 
 ```bash
-cargo check
-cargo test          # 152 tests
+cargo check --workspace
+cargo test          # 155 tests
 cargo clippy -- -D warnings
 cargo fmt --check
 cargo run --release --example bench
+cargo audit
 ```
+
+## Security
+
+- Zero `unsafe` blocks in production code
+- No shell/command execution
+- No hardcoded secrets
+- No network dependencies in core
+- All file operations use typed errors (no panics in production paths)
+- `cargo audit` clean (2 allowed warnings, both transitive via fastembed)
 
 ## License
 
