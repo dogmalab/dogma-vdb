@@ -89,7 +89,7 @@ impl Index for BruteForceIndex {
 
                 // Re-quantize existing + new
                 self.embedding_i8 = all_docs
-                    .iter()
+                    .par_iter()
                     .map(|d| {
                         if d.embedding.is_empty() {
                             Vec::new()
@@ -202,7 +202,7 @@ impl Index for BruteForceIndex {
             self.biases = biases;
             self.embedding_i8 = self
                 .documents
-                .iter()
+                .par_iter()
                 .map(|d| {
                     if d.embedding.is_empty() {
                         Vec::new()
