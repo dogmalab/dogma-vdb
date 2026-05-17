@@ -72,4 +72,5 @@ members = [
     "dogma-vdb-mcp",
     "dogma-vdb-embed",
     "dogma-vdb-embed-fastembed",
+    "dogma-vdb-rerank",
 ]

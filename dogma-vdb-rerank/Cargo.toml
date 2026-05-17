@@ -1,0 +1,9 @@
+[package]
+name = "dogma-vdb-rerank"
+version = "0.1.0"
+edition = "2021"
+description = "Agnostic local Cross-Encoder reranking for Rust — compatible with dogma-vdb, LanceDB, or any vector store."
+
+[dependencies]
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }

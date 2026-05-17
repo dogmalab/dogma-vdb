@@ -5,8 +5,10 @@
 1. **1 archivo Rust = 1 componente**. Cada componente tiene responsabilidad unica.
 2. **Index trait como frontera**. Backends son intercambiables via Box<dyn Index>.
 3. **SQ es ortogonal**. No cambia la API, solo el storage/distance.
-4. **Sin dependencias externas para algoritmos core**. HNSW, Annoy, SQ son Rust puro.
-5. **Config-driven**. Todo parametro via config.toml, no hardcode.
+4. **VectorStorage desacopla vectores de indices**. Los backends reciben
+   embeddings contiguos inyectados, sin saber su origen (RAM o mmap).
+5. **Sin dependencias externas para algoritmos core**. HNSW, IVF-PQ, SQ son Rust puro.
+6. **Config-driven**. Todo parametro via config.toml, no hardcode.
 
 ---
 
@@ -15,22 +17,24 @@
 ```
                          Collection
                              |
-                       Box<dyn Index>
-                        /    |    \
-                 /          |          \
-         BruteForce      HnswIndex    AnnoyIndex
-              |               |            |
-              +-- SQ? --------+-- SQ? -----+-- SQ?
-              |               |            |
-         Vec<Document>    Vec<Document>  Vec<Document>
-         metric: Metric   graphs[][]    trees: Vec<Tree>
-                          node_layers[]
-                          flat: Vec<f32>
+                     Box<dyn Index>
+                      /     |     \
+               /            |            \
+        BruteForce      HnswIndex      IvfPqIndex
+             |               |              |
+             +-- SQ? --------+-- SQ? -------+-- SQ?
+             |               |              |
+        Arc<dyn VectorStorage> (compartido)
+          /               \
+   MemoryBacked      MmapBacked
+   (Vec<f32>)        (memmap2)
+
+  BinStorage (persistencia JSONL + binario v2)
 ```
 
-**SQ**: cuando `sq=true`, cada backend almacena `embedding_i8: Vec<Vec<i8>>`
-adicional y usa `score_i8()` para distancias. El flag es parte de la config
-de cada backend (o global).
+**SQ**: cuando `sq=true`, cada backend usa `score_i8()` con scale/bias
+por documento. El grafo/topologia se construye con f32 original, la
+busqueda puede usar i8 con rescore opcional.
 
 ---
 
@@ -42,79 +46,75 @@ src/
   doc.rs                  # Document struct + builder
   distance.rs             # Metric, score(), dot(), cosine(), euclidean(), score_i8()
   error.rs                # Error types
-  storage.rs              # JSONL read/write (load/store/append)
+  storage.rs              # BinStorage (JSONL + binario v2 read/write/append)
   collection.rs           # Collection API (open, insert, search, etc.)
   filter.rs               # Metadata filter helpers
-  config.rs               # Global config from toml + env vars
   embedding.rs            # Embedder trait (for text→vec)
   watch.rs                # File watcher (notify v8)
   mcp.rs                  # MCP server (stdio)
   index/
-    mod.rs                # Index trait + re-exports
+    mod.rs                # Index trait + factory + re-exports
     brute_force.rs        # BruteForceIndex
     hnsw.rs               # HnswIndex + HnswConfig
-    annoy.rs              # AnnoyIndex + AnnoyConfig
+    ivf_pq.rs             # IvfPqIndex + IvfPqConfig
     sq.rs                 # SQ helpers: quantize(), score_i8(), rescore()
+  storage/
+    mod.rs                # VectorStorage trait
+    memory.rs             # MemoryBackedStorage
+    mmap.rs               # MmapBackedStorage + MmapBackedStorageBuilder
+    traits.rs             # Helper traits (DataSize, MmapBackedStorage base)
 ```
 
 ---
 
 ## 4. SQ — Scalar Quantization
 
-### 4.1. Algoritmo de Cuantizacion
+### 4.1. Algoritmo de Cuantizacion (corregido)
 
 Para cada embedding `v` de dimension `d`:
 
-1. Calcular `min_d` y `max_d` por dimension sobre todo el dataset (o
-   usar estadisticas globales). Alternativa mas simple: escala global
-   unica basada en el rango total del dataset.
-2. `scale = (max - min) / 255.0` (donde max/min son del dataset completo,
-   no por dimension).
-3. `bias = min`.
+1. Calcular `min_d` y `max_d` **por documento** (no global).
+2. `midpoint = (max_d + min_d) / 2.0` (bias centrado en el rango).
+3. `scale = (max_d - min_d) / 255.0`.
 4. `v_i8[i] = clamp(round((v[i] - bias) / scale), -128, 127)`.
 
-Algoritmo mas fino: min/max **por dimension**, almacenando `d` pares
-de scale/bias. Mas memoria pero mejor precision.
+El midpoint como bias reemplaza al `min` anterior, garantizando que
+valores cercanos a 0 se mapeen correctamente al rango i8 simetrico.
 
 ### 4.2. Distancia en i8
 
 ```
-dot_i8(a_i8, b_i8) = sum_i(a_i8[i] * b_i8[i]) * scale^2 + d * bias^2 + ...
+dot_i8(a_i8, b_i8) = sum_i(a_i8[i] * b_i8[i])  // escala lineal
 ```
 
-Simplificacion: para busqueda ANN donde solo importa el ranking,
-el factor constante no importa:
-
-```
-dot_i8_approx(a_i8, b_i8) = sum_i(a_i8[i] * b_i8[i])  // escala lineal
-```
+Para busqueda ANN donde solo importa el ranking, los factores constantes
+de escala no afectan el orden.
 
 ### 4.3. Rescoring (opcional)
 
 Para recuperar precision, despues de obtener top-k con i8, rescorear
-los k*2 con f32 original. Esto anade ~20% overhead pero mejora recall.
+los k*2 con f32 original. Esto anade ~20% overhead pero mejora recall
+de 40% → 90% en HNSW+SQ.
 
 ### 4.4. Integracion por Backend
 
 **BruteForce + SQ**: iterar embedding_i8, compute dot_i8, ordenar.
 Si rescore=true, tomar top-k*2, rescore con f32.
 
-**HNSW + SQ**: `search_layer()` usa `score_i8()` en vez de `score()`.
-Las conexiones del grafo se construyen con distancia f32 (una vez en
-insert), pero la busqueda usa i8. Esto es asimetrico pero funciona
-porque el grafo define la topologia, no los scores exactos.
+**HNSW + SQ**: El grafo se construye con distancia f32 original
+(garantiza topologia correcta). `search_layer()` usa `score_i8()`.
+Con rescore: top-k*2 candidatos → rescore f32. Recall: 90%.
 
-**Annoy + SQ**: las divisiones del arbol se hacen con f32 (build),
-pero la recoleccion de candidatos usa distancia i8. O mas simple:
-Annoy recolecta candidatos sin distancia (solo atravesando arboles),
-luego scoring con i8.
+**IVF-PQ + SQ**: Los centroides K-Means se calculan en f32. La
+asignacion a clusters y la distancia asimetrica se hace en f32.
+SQ es ortogonal adicional sobre los codigos PQ.
 
 ### 4.5. Donde vive SQ
 
 En `src/index/sq.rs`:
 
 ```rust
-/// Cuantizar un embedding f32 a i8 con escala global.
+/// Cuantizar un embedding f32 a i8 con escala por documento.
 pub fn quantize(embedding: &[f32], scale: f32, bias: f32) -> Vec<i8>;
 
 /// Cuantizar el query para busqueda con i8.
@@ -135,115 +135,176 @@ lo usa cuando `sq=true`.
 
 ---
 
-## 5. Annoy — Random Projection Forest
+## 5. IVF-PQ — Inverted File + Product Quantization
 
 ### 5.1. Estructura de Datos
 
 ```rust
-pub struct AnnoyIndex {
-    documents: Vec<Document>,   // metadata + f32 embeddings
-    trees: Vec<Tree>,
-    config: AnnoyConfig,
+pub struct IvfPqIndex {
+    documents: Vec<Document>,       // metadata, text, embedding (f32)
+    centroids: Vec<Vec<f32>>,       // nlist centroides K-Means (f32)
+    pq_codebook: Vec<Vec<f32>>,     // m sub-codebooks (256 x (d/m) c/u)
+    codes: Vec<Vec<u8>>,            // codigos PQ por documento (m bytes c/u)
+    assignments: Vec<usize>,        // asignacion cluster por documento
+    config: IvfPqConfig,
+    storage: Arc<dyn VectorStorage>, // embeddings contiguos compartidos
 }
 
-pub struct AnnoyConfig {
-    pub n_trees: usize,         // default: 10
-    pub search_k: i32,          // -1 = auto: n_trees * k
-}
-
-struct Tree {
-    nodes: Vec<TreeNode>,
-}
-
-enum TreeNode {
-    Leaf { indices: Vec<usize> },        // indices into documents[]
-    Split { left: usize, right: usize, n: Vec<f32>, d: f32 },
-    // n = normal vector, d = threshold for split
+pub struct IvfPqConfig {
+    pub nlist: usize,               // numero de centroides (default: 16)
+    pub m: usize,                   // numero de subvectores (default: 8)
+    pub nprobe: usize,              // clusters a explorar (default: 8)
+    pub metric: Metric,
 }
 ```
 
-### 5.2. Algoritmo de Build
+### 5.2. Algoritmo de Build (batch)
 
 ```
-fn build(docs: &[Document]) -> AnnoyIndex:
-    for tree in 0..n_trees:
-        tree = build_tree(0..docs.len(), depth=0)
+fn build(docs: &[Document]) -> IvfPqIndex:
+    1. K-Means sobre todos los embeddings (max 20 iteraciones):
+       a. Inicializar nlist centroides con k-means++
+       b. Asignar cada embedding al centroide mas cercano
+       c. Recalcular centroides como promedio de sus puntos
+       d. Repetir hasta convergencia o max iter
 
-fn build_tree(indices: &[usize], depth: usize) -> TreeNode:
-    if indices.len() <= k || depth >= max_depth:
-        return Leaf { indices }
+    2. Product Quantization:
+       a. Para cada dimension del embedding, dividir en m subvectores
+          de tamano d/m
+       b. Para cada subespacio, ejecutar K-Means con 256 centroides
+          (codebook del subvector)
+       c. Para cada documento, codificar cada subvector como el indice
+          u8 del centroide mas cercano en ese subespacio
 
-    a = random_point(docs)
-    b = random_point(docs)
-    n = a - b                          // normal vector
-    d = dot(n, a)                      // threshold
-
-    left = [i for i in indices if dot(n, docs[i].embedding) <= d]
-    right = [i for i in indices if dot(n, docs[i].embedding) > d]
-
-    if left.is_empty() || right.is_empty():
-        return Leaf { indices }
-
-    return Split {
-        left: build_tree(left, depth+1),
-        right: build_tree(right, depth+1),
-        n, d,
-    }
+    3. Almacenar: centroides (f32), pq_codebook (f32), codes (u8),
+       assignments (usize)
 ```
 
-### 5.3. Algoritmo de Busqueda
+### 5.3. Busqueda
 
 ```
 fn search(query, k) -> Vec<ScoredDocument>:
-    // Priority queue: prioridad = distancia absoluta al hiperplano
-    // (menos distancia = mas probable que este cerca)
-    heap = MaxHeap()   // pero ordenado por |dot(query, n) - d|
+    1. Calcular distancia del query a todos los nlist centroides.
+       Seleccionar los nprobe mas cercanos.
 
-    for tree in trees:
-        heap.push((abs_dist, tree.root))
+    2. Para cada uno de los nprobe clusters:
+       a. Precomputar tabla de distancias (LUT) entre query y los
+          256 centroides de cada subespacio PQ.
+       b. Escanear los codigos u8 de los documentos en ese cluster:
+          distancia_aprox = sum_m(LUT[m][code[m]])
+       c. Mantener top-k global con min-heap.
 
-    candidates = Set<usize>()
-
-    while heap.not_empty() && candidates.len() < search_k:
-        (dist, node) = heap.pop()
-
-        match node:
-            Leaf { indices } => candidates.extend(indices)
-            Split { left, right, n, d } =>
-                side = if dot(query, n) <= d then left else right
-                other = if side == left then right else left
-                dist_to_other = abs(dot(query, n) - d)
-
-                heap.push((0, side))         // explore preferred side first
-                heap.push((dist_to_other, other))
-
-    // Score candidates
-    candidates.sort_by(|id| score(query, docs[id].embedding))
-    return candidates[..k]
+    3. Ordenar candidatos por distancia, devolver top-k.
 ```
 
-### 5.4. SQ + Annoy
+### 5.4. Complejidad
 
-Con SQ activo, las divisiones del arbol se hacen con f32 original
-(pues el build es batch y no necesita ser rapido), pero el scoring
-de candidatos usa `score_i8()`.
+| Operacion | Complejidad |
+|-----------|-------------|
+| Build (K-Means) | O(nlist · n · d · iter) |
+| Build (PQ) | O(256 · m · (d/m) · n) = O(256 · d · n) |
+| Search | O(nlist · d + nprobe · (n/nlist) · m) |
+
+### 5.5. Memoria
+
+Para 5K docs 128-dim, nlist=16, m=8:
+- Centroides: 16 × 128 × 4B = 8 KB
+- PQ codebook: 8 × 256 × (128/8) × 4B = 128 KB
+- Codes: 5K × 8B = 40 KB
+- Asignaciones: 5K × 8B = 40 KB
+- **Total: ~216 KB** (~300 KB con overhead)
+
+Vs HNSW/BF: 5K × 128 × 4B = **2.5 MB** solo embeddings.
+**Ahorro: ~8-12×**
 
 ---
 
-## 6. Flat Embeddings en HNSW
+## 6. VectorStorage Trait
 
-### 6.1. Storage
+### 6.1. Definicion
+
+```rust
+pub trait VectorStorage: Send + Sync {
+    fn len(&self) -> usize;
+    fn dim(&self) -> usize;
+    fn get(&self, idx: usize) -> &[f32];
+    fn as_slice(&self) -> Option<&[f32]>;
+}
+```
+
+### 6.2. Implementaciones
+
+**MemoryBackedStorage**:
+```rust
+pub struct MemoryBackedStorage {
+    data: Vec<f32>,
+    dim: usize,
+}
+```
+- Vec<f32> contiguo en RAM.
+- `as_slice()` devuelve `Some(&data)`.
+- Para tests, pipelines volatiles, warm cache.
+
+**MmapBackedStorage**:
+```rust
+pub struct MmapBackedStorage {
+    _file: std::fs::File,    // mantiene fd vivo
+    mmap: memmap2::Mmap,     // mapping de todo el archivo
+    offset: usize,           // offset donde empiezan los vectores
+    len: usize,              // numero de vectores
+    dim: usize,              // dimension
+}
+```
+- Carga ~0ms: el OS pagea bajo demanda.
+- Formato binario v2 con padding 32-byte.
+- `as_slice()` devuelve `None` (los bytes mapeados no son Vec<f32>).
+- `get()` convierte el offset a puntero f32 (vida ligada al Mmap).
+- ⚠️ SIGBUS: si un proceso externo trunca el archivo, el kernel mata
+  el proceso. Documentado en el codigo.
+
+### 6.3. Integracion en Collection
+
+```rust
+pub struct Collection {
+    name: String,
+    documents: Vec<Document>,
+    index: Box<dyn Index>,
+    storage: BinStorage,
+    emb_storage: Arc<dyn VectorStorage>,
+}
+
+fn open(path) -> Result<Self> {
+    let storage = BinStorage::load(path)?;       // leer metadata + docs
+    let emb_storage = match config.use_mmap {
+        true => MmapBackedStorage::new(path)?,
+        false => MemoryBackedStorage::from_docs(&storage.documents),
+    };
+    let emb_storage = Arc::new(emb_storage);
+
+    let index = build_index(cfg, emb_storage.clone())?;
+    index.insert(&storage.documents)?;
+
+    Ok(Collection { name, documents, index, storage, emb_storage })
+}
+```
+
+---
+
+## 7. Flat Embeddings en HNSW
+
+### 7.1. Storage
 
 ```rust
 pub struct HnswIndex {
-    documents: Vec<Document>,       // metadata, text, embedding (f32)
+    documents: Vec<Document>,       // metadata, text
     embeddings_flat: Vec<f32>,      // solo si flat_embeddings=true
     dim: usize,                     // solo si flat_embeddings=true
+    storage: Arc<dyn VectorStorage>, // embeddings contiguos (siempre presente)
     // ... resto igual
 }
 ```
 
-### 6.2. Helper
+### 7.2. Helper
 
 ```rust
 fn embedding(&self, node_id: usize) -> &[f32] {
@@ -251,24 +312,21 @@ fn embedding(&self, node_id: usize) -> &[f32] {
         let start = node_id * self.dim;
         &self.embeddings_flat[start..start + self.dim]
     } else {
-        &self.documents[node_id].embedding
+        self.storage.get(node_id)
     }
 }
 ```
 
-### 6.3. Insercion
+### 7.3. Insercion
 
 Cuando `flat_embeddings=true`, insert_one() hace:
 1. Extiende `embeddings_flat` con el nuevo embedding.
-2. Limpia `doc.embedding` (libera memoria, el doc se persiste sin
-   embedding — se reconstruye al cargar).
-
-O alternativamente: mantiene ambos para no modificar Document.
+2. El embedding tambien vive en `storage` (VectorStorage compartido).
 
 Decision de diseno: flat_embeddings es solo para busqueda en memoria.
-El JSONL siempre guarda embedding f32 completo (para portabilidad y debug).
+El formato binario siempre guarda embedding f32 completo (portabilidad).
 
-### 6.4. Delete con Flat
+### 7.4. Delete con Flat
 
 Cuando se elimina un documento con flat, hay que reconstruir
 `embeddings_flat` desde los documents restantes (coste O(n·d) una vez,
@@ -276,124 +334,126 @@ equivalente a lo que ya hace el rebuild del grafo en delete).
 
 ---
 
-## 7. Estrategia de Factory
+## 8. Estrategia de Factory
 
-En `collection.rs`:
+En `index/mod.rs`:
 
 ```rust
-fn build(path, index) -> Collection {
+fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<dyn Index> {
     let mut index: Box<dyn Index> = match cfg.index_type {
-        "hnsw" => Box::new(HnswIndex::new(HnswConfig { ... })),
-        "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig { ... })),
-        _ => Box::new(BruteForceIndex::new(metric)),
+        "hnsw" => Box::new(HnswIndex::new(HnswConfig { ... }, storage)),
+        "ivf_pq" => Box::new(IvfPqIndex::new(IvfPqConfig { ... }, storage)),
+        _ => Box::new(BruteForceIndex::new(metric, storage)),
     };
 
-    // SQ envoltura? No: SQ es interno del backend.
-    // Cada backend recibe el flag sq y actua en consecuencia.
+    // SQ no es un wrapper — cada backend recibe el flag sq
+    // y actua en consecuencia en sus metodos search/insert.
 }
 ```
 
 ---
 
-## 8. Dependencias
+## 9. Dependencias
 
 ### Actuales
 - serde, serde_json, thiserror — core
 - rayon — parallel BruteForce
 - toml, once_cell, log — config
+- memmap2 — MmapBackedStorage
 - notify, crossbeam-channel — watcher (feature)
 - rmcp, tokio, tracing, clap — MCP (feature)
 
-### Nuevas (para Annoy, SQ)
-- **Ninguna**. Pure Rust stdlib. Annoy solo necesita generacion
-  de numeros aleatorios: usar `SplitMix64` (ya usado en HNSW) o
-  `rand` como dev-dependency.
+### Sin dependencias externas para algoritmos core
+- HNSW: SplitMix64 (ya implementado en core)
+- IVF-PQ: K-Means y PQ son Rust puro (stdlib)
+- SQ: Rust puro (stdlib)
 
 ### Opcionales
-- `rand` (dev-dependency sola, o feature opcional si se necesita
-  no-determinismo real)
+- `rand` (dev-dependency)
 
 ---
 
-## 9. Metricas Objetivo
+## 10. Metricas Objetivo
 
 | Backend | 5K docs 128-dim | 50K docs 768-dim | 100K docs 384-dim |
 |---------|:---------------:|:----------------:|:-----------------:|
-| BruteForce | 1,700 us | ~200 ms | ~400 ms |
-| HNSW | 44 us | ~500 us | ~1 ms |
-| Annoy | ~80 us | ~1 ms | ~2 ms |
-| BruteForce+SQ | ~800 us | ~80 ms | ~150 ms |
-| HNSW+SQ | ~25 us | ~300 us | ~600 us |
+| BruteForce | 1,460 us | ~200 ms | ~400 ms |
+| HNSW | 77 us | ~500 us | ~1 ms |
+| IVF-PQ | 128 us | ~2 ms | ~4 ms |
+| HNSW+SQ+Rescore | 73 us | ~350 us | ~700 us |
 
 RAM estimada para 100K docs 384-dim:
-- f32: 100K * 384 * 4 = ~153 MB (solo embeddings)
+- f32 embeddings: 100K × 384 × 4 = ~153 MB
 - HNSW graphs: ~200 MB adicional (conexiones)
-- SQ i8: 100K * 384 * 1 = ~38 MB + graphs ~200 MB
+- IVF-PQ: ~1.5 MB (centroides + codebook + codes)
+- SQ i8: ~38 MB (solo i8, sin graphs)
 
 ---
 
-## 10. Prioridad de Implementacion
+## 11. Prioridad de Implementacion Completada
 
-1. **HNSW + flat_embeddings** (ya empezado, ~1 sesion)
-2. **SQ module** (distance.rs + sq.rs, ~1 sesion)
-3. **SQ integration** en BruteForce y HNSW (~1 sesion)
-4. **Annoy** (nuevo backend completo, ~2 sesiones)
-5. **Benchmarks** actualizados con todos los backends (~0.5 sesion)
+1. ~~**HNSW + flat_embeddings**~~ (completado)
+2. ~~**SQ module**~~ (completado)
+3. ~~**SQ integration** en BruteForce y HNSW~~ (completado, recall 90%)
+4. ~~**Annoy**~~ (reemplazado por IVF-PQ)
+5. ~~**IVF-PQ backend**~~ (completado, ~8× ahorro RAM)
+6. ~~**VectorStorage trait**~~ (completado, mmap ~0ms load)
+7. ~~**Benchmarks**~~ (actualizados)
 
 ---
 
-## 11. Enriquecimiento Futuro (Post-Beta)
+## 12. Enriquecimiento Futuro (Post-Beta)
 
-### 11.1. Seguridad
+### 12.1. Seguridad
 
 | Item | Prioridad | Descripcion |
 |------|:---------:|-------------|
-| MCP HTTP auth | Media | Si se implementa `serve_http`, anadir path whitelist y autenticacion basica. El MCP stdio actual solo expone herramientas a procesos locales, no hay superficie de ataque |
-| Watcher path sandbox | Baja | Validar que `source_dirs` este dentro de un directorio base configurado. Actualmente el usuario configura los directorios, no hay riesgo real en CLI local |
-| Model checksum verification | Baja | Verificar checksum SHA256 de modelos ONNX descargados. Depende de `fastembed` que lo implemente upstream |
-| Audit CI hardening | Baja | Configurar `cargo audit` para fallar solo en vulnerabilidades reales (no warnings de mantenimiento). Actualmente es correcto |
+| MCP HTTP auth | Media | Si se implementa `serve_http`, anadir path whitelist y autenticacion basica |
+| File locking (fs2) | Media | Bloqueo OS-level para evitar SIGBUS por escritura concurrente |
+| Watcher path sandbox | Baja | Validar que `source_dirs` este dentro de un directorio base configurado |
+| Model checksum verification | Baja | Verificar checksum SHA256 de modelos ONNX descargados |
+| Audit CI hardening | Baja | Configurar `cargo audit` para fallar solo en vulnerabilidades reales |
 
-### 11.2. Rendimiento y Escalabilidad
-
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **Memory-mapped embeddings** | Alto | Cargar embeddings via mmap en vez de Vec<f32>. Permite colecciones > RAM disponible. ~2-3 sesiones |
-| **IVF index** | Medio | K-means + busqueda en clusters. Alternativa a HNSW para datasets estaticos. ~1-2 sesiones |
-| **SIMD completo en BF search** | Bajo | BF search ya usa rayon para paralelismo. SIMD adicional marginal. Ya implementado via `wide` |
-| **Parallel HNSW build** | Bajo | HNSW es inherentemente secuencial por documento. No se puede paralelizar |
-
-### 11.3. Formatos y Portabilidad
+### 12.2. Rendimiento y Escalabilidad
 
 | Item | Impacto | Descripcion |
 |------|:-------:|-------------|
-| **Formato Parquet** | Medio | Export a Apache Parquet para interoperabilidad con data science. Dependencia opcional |
-| **Import desde ChromaDB/LanceDB** | Medio | Script de migracion desde otros formatos de vectores. ~1 sesion |
-| **Formato binario v2 con compresion** | Bajo | Anadir compresion zstd opcional al formato binario actual |
+| **Parallel IVF-PQ build** | Alto | Paralelizar K-Means y PQ build con rayon. ~1 sesion |
+| **SIMD para PQ lookup** | Medio | Acelerar distancia asimetrica con SIMD (wide crate) |
+| **HNSW parallel insert** | Medio | Batch insert con lock-free grafo. ~2 sesiones |
+| **Multi-index search** | Bajo | Buscar en HNSW + IVF-PQ y fusionar resultados |
 
-### 11.4. Integraciones
+### 12.3. Formatos y Portabilidad
+
+| Item | Impacto | Descripcion |
+|------|:-------:|-------------|
+| **Formato Parquet** | Medio | Export a Apache Parquet para interoperabilidad con data science |
+| **Import desde ChromaDB/LanceDB** | Medio | Script de migracion desde otros formatos de vectores |
+| **Compresion zstd en binario** | Bajo | Compresion opcional zstd para el formato binario v3 |
+
+### 12.4. Integraciones
 
 | Item | Impacto | Descripcion |
 |------|:-------:|-------------|
 | **Python bindings (PyO3)** | Alto | `pip install dogma-vdb` con API Python completa. ~3-4 sesiones |
-| **LangChain VectorStore nativo** | Alto | Provider Python que implementa VectorStore de LangChain usando MCP subprocess. ~1 sesion |
+| **LangChain VectorStore nativo** | Alto | Provider Python que implementa VectorStore de LangChain usando MCP subprocess |
 | **Embedding models adicionales** | Medio | Soportar modelos ONNX distintos a MiniLM-L6-v2 (BGE, GTE, etc.) |
-| **Llamarada / mistral.rs** | Medio | Embedding via llama.cpp para modelos locales (alternativa ligera a ONNX) |
+| **Llamarada / mistral.rs** | Medio | Embedding via llama.cpp para modelos locales |
 
-### 11.5. Operaciones
+### 12.5. Operaciones
 
 | Item | Impacto | Descripcion |
 |------|:-------:|-------------|
-| **CRUD update eficiente** | Medio | Actualmente delete+insert reescribe todo el archivo binario. Hacer update in-place |
+| **CRUD update eficiente** | Medio | Actualmente delete+insert reescribe todo. Hacer update in-place |
 | **Snapshot / versionado** | Bajo | Mantener N versiones anteriores del .vdb para rollback |
-| **CLI en REPl** | Bajo | Modo interactivo para explorar colecciones desde terminal |
+| **CLI en REPL** | Bajo | Modo interactivo para explorar colecciones desde terminal |
 | **Estadisticas de coleccion** | Bajo | Reportar distribucion de vectores, outliers, clustering |
 
-### 11.6. Testing y CI
+### 12.6. Testing y CI
 
 | Item | Impacto | Descripcion |
 |------|:-------:|-------------|
 | **Fuzz testing** | Medio | Fuzzing de entrada de datos (embeddings malformados, metadata corrupta) |
-| **Benchmarks en CI** | Bajo | Ejecutar bench.rs en CI y comparar con commit anterior para detectar regresiones |
+| **Benchmarks en CI** | Bajo | Ejecutar bench.rs en CI y comparar con commit anterior |
 | **Test de integracion MCP** | Bajo | Test E2E que inicia MCP server, conecta, hace queries |
 | **Proptest para indices** | Bajo | Test propiedad: search(k) siempre devuelve <= k resultados |
-

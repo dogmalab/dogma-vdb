@@ -33,6 +33,7 @@ pub mod embedding;
 pub mod error;
 pub mod filter;
 pub mod index;
+pub mod rerank;
 pub mod smart_chunker;
 pub mod storage;
 

@@ -58,27 +58,29 @@ pub trait Index: Send + Sync {
 - **flat_embeddings**: Cuando true, almacena todos los embeddings en
   un solo Vec<f32> contiguo en vez de Vec<Vec<f32>> (reduce cache misses,
   TLB pressure, alloc overhead).
-- **Estado**: PARCIAL (implementado sin flat_embeddings).
+- **Estado**: IMPLEMENTADO.
 
-### RF-03: AnnoyIndex
+### RF-03: IvfPqIndex
 
-- **Descripcion**: Random Projection Forest (Spotify Annoy).
-  Divide el espacio recursivamente con hiperplanos aleatorios.
-  Construye `n_trees` arboles; busca atravesando todos y recolectando
-  candidatos.
-- **Entrada**: Documentos con embedding + AnnoyConfig { n_trees, search_k }.
+- **Descripcion**: Busqueda aproximada via archivo invertido (IVF) +
+  cuantizacion de producto (PQ). Particiona el espacio con K-Means,
+  comprime subvectores a u8 para minimizar memoria.
+- **Entrada**: Documentos con embedding + IvfPqConfig { nlist, m, nprobe, metric }.
 - **Salida**: Top-k aproximado.
 - **Comportamiento**:
-  1. **Build**: batch desde slice de Documentos. No incremental.
-  2. Por cada arbol: selecciona 2 puntos aleatorios para definir un
-     hiperplano, divide el conjunto, recursivo hasta < `k` puntos por nodo.
-  3. Busqueda: atraviesa los `n_trees` arboles con una priority queue
-     compartida (prioridad = distancia al hiperplano). Recolecta candidatos,
-     scores exactos al final.
-  4. `insert()` / `delete()`: rebuild completo (panic o recrear).
-- **Condiciones**: Ideal para datasets staticos. Build rapido, sin
-  entrenamiento, sin parametros por dimension.
-- **Estado**: NO IMPLEMENTADO.
+  1. **Build** (batch): ejecuta K-Means sobre todos los embeddings
+     para construir `nlist` centroides.
+  2. Asigna cada embedding a su centroide mas cercano y lo particiona
+     en `m` subvectores. Cada subvector se cuantiza a u8.
+  3. Almacena las tablas PQ (centroides de subvectores) y los codigos
+     cuantizados (u8) por documento.
+  4. **Busqueda**: calcula distancia del query a los `nprobe` centroides
+     mas cercanos. Para cada cluster, construye lookup tables (LUTs)
+     de distancias asimetricas y escanea los codigos u8.
+  5. `insert()` / `delete()`: rebuild completo del indice.
+- **Condiciones**: Ideal para datasets estaticos o semi-estaticos donde
+  se prioriza el ahorro de memoria (~8× menos RAM que HNSW/BF).
+- **Estado**: IMPLEMENTADO.
 
 ### RF-04: Scalar Quantization (SQ)
 
@@ -87,18 +89,17 @@ pub trait Index: Send + Sync {
   y acelerar calculo de distancias ~2x.
 - **Entrada**: Se activa via flag `sq: bool` en config.
 - **Comportamiento**:
-  1. En **insercion**: calcular `scale` y `bias` globales por dimension
-     (o mejor, por todo el dataset con min/max por dimension).
+  1. En **insercion**: calcular `scale` y `bias` usando midpoint global
+     (`midpoint = (max + min) / 2`, `scale = (max - min) / 255.0`).
      Cuantizar: `i8 = clamp((f32 - bias) / scale, -128, 127)`.
   2. En **busqueda**: cuantizar el query, calcular distancias con
-     aritmetica entera (dot_i8 = suma de productos i8, mucho mas rapida).
-     Opcional: rescore con f32 los top-`k*2` para recuperar precision.
+     aritmetica entera (dot_i8). Rescore opcional con f32 los top-k*2.
   3. El Document almacena `embedding: Vec<f32>` siempre (para persistencia
-     y debug). El backend almacena `embedding_i8: Vec<Vec<i8>>` en memoria
+     y debug). El backend usa `embedding_i8: Vec<Vec<i8>>` en memoria
      solo cuando SQ esta activo.
-- **Estado**: NO IMPLEMENTADO.
+- **Estado**: IMPLEMENTADO.
 - **Combinacion**: SQ funciona con cualquier backend (BruteForce, HNSW,
-  Annoy). Es ortogonal — no cambia el algoritmo, solo el storage y la
+  IVF-PQ). Es ortogonal — no cambia el algoritmo, solo el storage y la
   funcion de distancia.
 
 ---
@@ -115,9 +116,33 @@ Soportadas por todos los backends:
 
 ---
 
-## 4. Filtrado de Metadatos
+## 4. VectorStorage Trait
 
-### RF-05: Filter API
+### RF-05: VectorStorage
+
+- **Descripcion**: Abstraccion que desacopla el almacenamiento de vectores
+  del ciclo de vida de los indices. Permite inyectar embeddings contiguos
+  desde distintas fuentes (RAM, mmap) sin que los backends lo sepan.
+
+```rust
+pub trait VectorStorage: Send + Sync {
+    fn len(&self) -> usize;
+    fn dim(&self) -> usize;
+    fn get(&self, idx: usize) -> &[f32];
+    fn as_slice(&self) -> Option<&[f32]>;
+}
+```
+
+- **Implementaciones**:
+  - `MemoryBackedStorage`: Vec<f32> contiguo en RAM. Para tests y pipelines volatiles.
+  - `MmapBackedStorage`: Archivo mapeado a memoria via `memmap2`. Carga ~0ms.
+    Incluye documentacion defensiva contra SIGBUS.
+
+---
+
+## 5. Filtrado de Metadatos
+
+### RF-06: Filter API
 
 - `metadata_eq(key, value)` → igualdad exacta de string.
 - `metadata_contains(key, substr)` → substring match.
@@ -127,13 +152,13 @@ Soportadas por todos los backends:
 
 **Comportamiento por backend**:
 - BruteForce: pre-filter (filtra antes de calcular distancia).
-- HNSW/Annoy: post-filter con multiplicador k*5.
+- HNSW/IVF-PQ: post-filter con multiplicador k*5.
 
 **Limite**: No hay filtros numericos (range), ni OR, ni full-text search.
 
 ---
 
-## 5. API de Alto Nivel
+## 6. API de Alto Nivel
 
 ### Collection (implementado)
 
@@ -149,17 +174,17 @@ Collection::search_filtered(query, k, filter) -> Vec<ScoredDocument>
 Collection::documents() -> Iterator<Item = &Document>
 ```
 
-El tipo de indice se elige desde config (`index_type: bruteforce|hnsw|annoy`).
+El tipo de indice se elige desde config (`index_type: bruteforce|hnsw|ivf_pq`).
 
 ---
 
-## 6. Configuracion
+## 7. Configuracion
 
 ### config.toml (CollectionConfig)
 
 ```toml
 [collection]
-index_type = "hnsw"           # bruteforce | hnsw | annoy
+index_type = "hnsw"           # bruteforce | hnsw | ivf_pq
 index_metric = "cosine"       # cosine | dot | euclidean
 
 # HNSW
@@ -168,17 +193,32 @@ hnsw_ef_construction = 200
 hnsw_ef_search = 50
 hnsw_flat_embeddings = false
 
-# Annoy
-annoy_n_trees = 10
-annoy_search_k = -1           # -1 = auto (n_trees * k)
+# IVF-PQ
+ivf_pq_nlist = 16             # numero de centroides K-Means
+ivf_pq_m = 8                  # numero de subvectores (PQ)
+ivf_pq_nprobe = 8             # clusters a explorar en busqueda
 
 # SQ (ortogonal, aplica a cualquier backend)
 sq = false
+sq_rescore = false
 ```
 
 ---
 
-## 8. Modelo de Seguridad
+## 8. Almacenamiento Binario (v2)
+
+### RF-07: BinStorage v2
+
+- **Formato**: Header JSON/TOML + padding 32-byte + vectores f32 contiguos.
+- **Padding**: Bytes de relleno dinamico post-header para alinear la seccion
+  de vectores a 32 bytes (AVX2-ready).
+- **Carga**: Via MemoryBackedStorage (RAM) o MmapBackedStorage (~0ms).
+- **Migracion**: Auto-deteccion de formato v1 → v2 en apertura.
+- **Escritura**: Append-only O(1) para nuevos vectores.
+
+---
+
+## 9. Modelo de Seguridad
 
 dogma-vdb es una herramienta **CLI local / libreria embebible**:
 
@@ -192,7 +232,8 @@ dogma-vdb es una herramienta **CLI local / libreria embebible**:
 | fastembed | Descarga modelos de HuggingFace | Bajo (sin verificar checksum) |
 
 **Principios**:
-- No `unsafe` en codigo de produccion (0 bloques)
+- No `unsafe` en codigo de produccion (aislado a conversion de bytes en VectorStorage)
+- MmapBackedStorage incluye documentacion defensiva contra SIGBUS
 - Sin ejecucion de comandos del sistema
 - Sin secretos hardcodeados
 - Sin red en el core (el MCP server es opcional y stdio por defecto)
@@ -203,14 +244,18 @@ Si en el futuro se implementa `serve_http`, se anadiran:
 - Rate limiting
 
 
+## Scenarios de Testing
+
 | Escenario | Backend | Given | When | Then |
 |-----------|---------|-------|------|------|
 | Exactitud | BruteForce | 100 docs 128-dim | search k=5 | resultados exactos (100% recall) |
 | Aprox | HNSW | 5000 docs 128-dim | search k=10 | recall >= 90% vs BF |
-| Aprox | Annoy | 5000 docs 128-dim | search k=10 | recall >= 85% vs BF |
+| Aprox | IVF-PQ | 5000 docs 128-dim | search k=10 | recall >= 85% vs BF |
 | Flat | HNSW | flat_embeddings=true | insert 5000 | misma recall, ~2x velocidad |
-| SQ | HNSW+SQ | sq=true | search | ~2x velocidad, recall >= 95% |
+| SQ | HNSW+SQ | sq=true, rescore=true | search | ~2x velocidad, recall >= 90% |
 | SQ | BF+SQ | sq=true | search | ~2x velocidad, misma recall |
+| SQ | IVF-PQ+SQ | sq=true | search | memoria ~32× vs BF |
 | Filtro | BruteForce | docs con metadata | search_filtered | solo docs que matchean |
-| Build | Annoy | 5000 docs | build | < 500ms |
+| Build | IVF-PQ | 5000 docs | build | < 50ms |
 | Memoria | HNSW+SQ | 100K docs 768-dim | insert | < 150 MB RAM |
+| Carga fria | MmapBackedStorage | 5K docs 384-dim | open | < 1ms |

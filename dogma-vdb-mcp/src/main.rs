@@ -11,8 +11,23 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tokio::io::{stdin, stdout};
 use tracing_subscriber::EnvFilter;
+
+mod rerank_adapter;
+
+use dogma_vdb::rerank::Reranker;
+
+// ---------------------------------------------------------------------------
+// Global reranker (lazily initialised once)
+// ---------------------------------------------------------------------------
+
+static RERANKER: OnceLock<rerank_adapter::DogmaRerankerAdapter> = OnceLock::new();
+
+fn get_reranker() -> Option<&'static rerank_adapter::DogmaRerankerAdapter> {
+    RERANKER.get()
+}
 
 // ---------------------------------------------------------------------------
 // Input / output types
@@ -57,6 +72,12 @@ struct QueryParams {
     index_type: String,
     #[serde(default = "default_metric")]
     metric: String,
+    #[schemars(description = "Enable two-stage reranking (default: false)")]
+    #[serde(default)]
+    rerank: bool,
+    #[schemars(description = "Original query text (required when rerank=true)")]
+    #[serde(default)]
+    query_text: Option<String>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -163,30 +184,89 @@ impl VdbServer {
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<QueryOutput>, String> {
         let col = open_collection(&params.path, &params.index_type, &params.metric)?;
+
+        let search_k = if params.rerank {
+            params.k * 5
+        } else {
+            params.k
+        };
         let query_f32: Vec<f32> = params.embedding.iter().map(|&x| x as f32).collect();
-        let results = col.search(&query_f32, params.k);
+        let results = col.search(&query_f32, search_k);
 
-        let items: Vec<QueryResultItem> = results
-            .into_iter()
-            .map(|r| {
-                let text = if r.document.text.len() > 200 {
-                    format!("{}...", &r.document.text[..197])
-                } else {
-                    r.document.text
-                };
-                QueryResultItem {
-                    score: r.score as f64,
-                    id: r.document.id,
-                    text,
-                }
-            })
-            .collect();
+        // Stage 2: reranking (Cross-Encoder) if enabled
+        if params.rerank {
+            let query_text = params
+                .query_text
+                .as_deref()
+                .unwrap_or("")
+                .to_string();
+            if query_text.is_empty() {
+                return Err("rerank requires 'query_text' parameter".into());
+            }
 
-        let count = items.len();
-        Ok(Json(QueryOutput {
-            results: items,
-            count,
-        }))
+            // Extract raw documents from search results
+            let mut docs: Vec<dogma_vdb::doc::Document> =
+                results.into_iter().map(|r| r.document).collect();
+
+            // Apply reranker
+            let reranker = get_reranker().ok_or_else(|| {
+                "rerank requested but no reranker initialised. \
+                 Start the server with DOGMA_RERANK=1 or omit rerank"
+                    .to_string()
+            })?;
+            reranker
+                .rerank(&query_text, &mut docs)
+                .map_err(|e| format!("rerank failed: {e}"))?;
+
+            // Truncate to the requested k after reranking
+            docs.truncate(params.k);
+
+            // Rebuild ScoredDocuments (scores are now from the Cross-Encoder)
+            // Use the reranker's scores as `score` for transparency.
+            let items: Vec<QueryResultItem> = docs
+                .into_iter()
+                .map(|d| {
+                    let text = if d.text.len() > 200 {
+                        format!("{}...", &d.text[..197])
+                    } else {
+                        d.text
+                    };
+                    QueryResultItem {
+                        score: 0.0, // Cross-Encoder scores not preserved in this flow
+                        id: d.id,
+                        text,
+                    }
+                })
+                .collect();
+            let count = items.len();
+            Ok(Json(QueryOutput {
+                results: items,
+                count,
+            }))
+        } else {
+            // No reranking — return results as-is
+            let items: Vec<QueryResultItem> = results
+                .into_iter()
+                .map(|r| {
+                    let text = if r.document.text.len() > 200 {
+                        format!("{}...", &r.document.text[..197])
+                    } else {
+                        r.document.text
+                    };
+                    QueryResultItem {
+                        score: r.score as f64,
+                        id: r.document.id,
+                        text,
+                    }
+                })
+                .collect();
+
+            let count = items.len();
+            Ok(Json(QueryOutput {
+                results: items,
+                count,
+            }))
+        }
     }
 
     #[tool(
@@ -284,6 +364,17 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    // Initialise the Cross-Encoder reranker when `DOGMA_RERANK=1` is set
+    if std::env::var("DOGMA_RERANK").as_deref() == Ok("1") {
+        let reranker = rerank_adapter::DogmaRerankerAdapter::new(Box::new(
+            dogma_vdb_rerank::StubReranker,
+        ));
+        let _ = RERANKER.set(reranker);
+        tracing::info!("Reranker initialised (StubReranker)");
+    } else {
+        tracing::info!("Reranker disabled (set DOGMA_RERANK=1 to enable)");
+    }
 
     let server = VdbServer;
 
