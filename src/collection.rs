@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::index::{
     AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument,
 };
-use crate::storage::JsonlStorage;
+use crate::storage::BinStorage;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -30,7 +30,7 @@ use std::path::PathBuf;
 /// ```
 pub struct Collection {
     name: String,
-    storage: JsonlStorage,
+    storage: BinStorage,
     index: Box<dyn Index>,
 }
 
@@ -108,9 +108,19 @@ impl Collection {
             .and_then(|s| s.to_str())
             .unwrap_or("default")
             .to_string();
-        let storage = JsonlStorage::new(&path);
 
-        if storage.exists() {
+        // Auto-detect format: if the file exists and doesn't have the
+        // binary magic, it's an old JSONL file — migrate transparently.
+        if path.exists() && !BinStorage::is_binary(&path) {
+            let jsonl = crate::storage::JsonlStorage::new(&path);
+            let documents = jsonl.load()?;
+            index.insert(&documents);
+            let bin = BinStorage::new(&path);
+            bin.store(&documents)?;
+        }
+
+        let storage = BinStorage::new(&path);
+        if storage.exists_with_magic() {
             let documents = storage.load()?;
             index.insert(&documents);
         }
@@ -138,17 +148,15 @@ impl Collection {
 
     /// Insert a single document and persist immediately.
     pub fn insert(&mut self, doc: Document) -> Result<()> {
-        self.storage.append(&doc)?;
         self.index.insert(&[doc]);
+        self.storage.store(self.index.documents())?;
         Ok(())
     }
 
-    /// Insert many documents at once (single persist per doc).
+    /// Insert many documents at once.
     pub fn insert_batch(&mut self, docs: &[Document]) -> Result<()> {
-        for doc in docs {
-            self.storage.append(doc)?;
-        }
         self.index.insert(docs);
+        self.storage.store(self.index.documents())?;
         Ok(())
     }
 
@@ -233,6 +241,21 @@ impl Collection {
     /// Iterate over all documents.
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
         self.index.documents().iter()
+    }
+
+    /// The underlying file path.
+    pub fn path(&self) -> &std::path::Path {
+        self.storage.path()
+    }
+
+    /// Export the collection to a JSONL file for debugging / inspection.
+    ///
+    /// The exported file can be inspected with `cat`, `grep`, `sed`,
+    /// and re-imported with a future `Collection::open()` call (the
+    /// old JSONL format is auto-detected and migrated).
+    pub fn export_jsonl(&self, path: impl Into<std::path::PathBuf>) -> Result<()> {
+        let jsonl = crate::storage::JsonlStorage::new(path);
+        jsonl.store(self.index.documents())
     }
 }
 

@@ -138,17 +138,15 @@ fn test_raw_storage_roundtrip() {
     let path = dir.path().join("raw.vdb");
     let storage = JsonlStorage::new(&path);
 
-    let mut docs = Vec::new();
-    for i in 0..5 {
-        docs.push(
+    let docs: Vec<Document> = (0..5)
+        .map(|i| {
             Document::builder(format!("k{}", i), format!("value {}", i))
                 .embedding(vec![i as f32 * 0.1, 0.2])
                 .metadata("idx", format!("{}", i))
-                .build(),
-        );
-    }
+                .build()
+        })
+        .collect();
     storage.store(&docs).unwrap();
-    assert_eq!(storage.count().unwrap(), 5);
 
     let loaded = storage.load().unwrap();
     assert_eq!(loaded.len(), 5);

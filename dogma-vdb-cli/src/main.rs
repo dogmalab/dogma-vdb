@@ -107,6 +107,20 @@ enum Commands {
         #[arg(long, default_value = "cosine")]
         metric: String,
     },
+    /// Export collection to JSONL (debug format)
+    Export {
+        /// Path to the .vdb collection
+        path: PathBuf,
+        /// Output JSONL path (default: stdout)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Index type
+        #[arg(long, default_value = "bruteforce")]
+        index_type: String,
+        /// Distance metric
+        #[arg(long, default_value = "cosine")]
+        metric: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -144,6 +158,12 @@ fn main() -> Result<()> {
             index_type,
             metric,
         } => cmd_delete(&path, &ids, &index_type, &metric),
+        Commands::Export {
+            path,
+            output,
+            index_type,
+            metric,
+        } => cmd_export(&path, output, &index_type, &metric),
     }
 }
 
@@ -277,6 +297,23 @@ fn cmd_delete(path: &PathBuf, ids: &[String], index_type: &str, metric: &str) ->
     let str_ids: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
     let deleted = col.delete(&str_ids)?;
     println!("Deleted {deleted} document(s) from {}.", col.name());
+    Ok(())
+}
+
+fn cmd_export(
+    path: &PathBuf,
+    output: Option<PathBuf>,
+    index_type: &str,
+    metric: &str,
+) -> Result<()> {
+    let col = open_collection(path, index_type, metric)?;
+    let out_path = output.unwrap_or_else(|| {
+        let mut p = path.clone();
+        p.set_extension("vdb.jsonl");
+        p
+    });
+    col.export_jsonl(&out_path)?;
+    println!("Exported {} documents to {}", col.len(), out_path.display());
     Ok(())
 }
 
