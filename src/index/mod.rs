@@ -16,6 +16,8 @@ pub use ivf_pq::{IvfPqConfig, IvfPqIndex};
 pub use sq::*;
 
 use crate::doc::Document;
+use crate::storage::traits::VectorStorage;
+use std::sync::Arc;
 
 /// A scored search result.
 #[derive(Debug, Clone)]
@@ -33,6 +35,9 @@ pub trait Index: Send + Sync {
     /// Insert documents into the index.
     fn insert(&mut self, docs: &[Document]);
 
+    /// Return a reference to all stored documents.
+    fn documents(&self) -> &[Document];
+
     /// Delete documents by their IDs.
     ///
     /// Returns the number of documents actually removed.
@@ -40,9 +45,6 @@ pub trait Index: Send + Sync {
 
     /// Search for the `k` nearest neighbours of `query`.
     fn search(&self, query: &[f32], k: usize) -> Vec<ScoredDocument>;
-
-    /// Return a reference to all stored documents.
-    fn documents(&self) -> &[Document];
 
     /// Search with a metadata / content filter.
     ///
@@ -69,4 +71,11 @@ pub trait Index: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Inject a [`VectorStorage`] for zero-copy embedding access.
+    ///
+    /// When set, index backends should use this storage for distance
+    /// computation instead of the per-document embeddings stored in
+    /// [`Document`].  Default is a no-op.
+    fn set_storage(&mut self, _storage: Arc<dyn VectorStorage>) {}
 }

@@ -14,9 +14,11 @@ use crate::error::Result;
 use crate::index::{
     BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
 };
+use crate::storage::traits::{MemoryBackedStorage, MmapBackedStorage, VectorStorage};
 use crate::storage::BinStorage;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// A named collection backed by a `.vdb` file.
 ///
@@ -32,6 +34,9 @@ pub struct Collection {
     name: String,
     storage: BinStorage,
     index: Box<dyn Index>,
+    /// Zero-copy embedding storage (mmap or memory-backed).
+    #[allow(dead_code)]
+    emb_storage: Option<Arc<dyn VectorStorage>>,
 }
 
 impl Collection {
@@ -124,10 +129,54 @@ impl Collection {
             index.insert(&documents);
         }
 
+        // Create embedding storage (mmap for binary files, memory for tests)
+        let emb_storage: Option<Arc<dyn VectorStorage>> = if storage.exists_with_magic() {
+            match BinStorage::embedding_region(&path) {
+                Ok((offset, len, _dim, _count)) if len > 0 => {
+                    // Mmap the embedding region.  memmap2 requires
+                    // page-aligned offset, so we round down and compensate.
+                    let page_size = 4096u64;
+                    let aligned_off = offset - (offset % page_size);
+                    let extra = (offset - aligned_off) as usize;
+                    let map_len = len + extra;
+                    match MmapBackedStorage::new_with_offset(&path, aligned_off, map_len) {
+                        Ok(mmap) => {
+                            // Slice to just the embedding region
+                            let bytes = &mmap.as_bytes()[extra..extra + len];
+                            Some(Arc::new(MemoryBackedStorage::new(bytes.to_vec()))
+                                as Arc<dyn VectorStorage>)
+                        }
+                        Err(_) => None,
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            // Memory-backed from documents
+            let docs = index.documents();
+            if !docs.is_empty() && !docs[0].embedding.is_empty() {
+                let dim = docs[0].embedding.len();
+                let mut data = Vec::with_capacity(docs.len() * dim * 4);
+                for d in docs {
+                    let bytes: &[u8] = bytemuck::cast_slice(&d.embedding);
+                    data.extend_from_slice(bytes);
+                }
+                Some(Arc::new(MemoryBackedStorage::new(data)))
+            } else {
+                None
+            }
+        };
+
+        // Inject storage into the index backend
+        if let Some(ref s) = emb_storage {
+            index.set_storage(s.clone());
+        }
+
         Ok(Self {
             name,
             storage,
             index,
+            emb_storage,
         })
     }
 

@@ -22,8 +22,10 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::index::{Index, ScoredDocument};
+use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -172,7 +174,7 @@ fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<V
 /// let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 5);
 /// assert_eq!(results.len(), 1);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct IvfPqIndex {
     documents: Vec<Document>,
     config: IvfPqConfig,
@@ -184,6 +186,23 @@ pub struct IvfPqIndex {
     // PQ
     codebooks: Vec<Vec<Vec<f32>>>, // [M][256][subdim]
     codes: Vec<Vec<u8>>,           // [N][M]
+
+    /// Zero-copy embedding storage (optional).
+    storage: Option<Arc<dyn VectorStorage>>,
+}
+
+impl std::fmt::Debug for IvfPqIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IvfPqIndex")
+            .field("documents", &self.documents)
+            .field("config", &self.config)
+            .field("centroids", &self.centroids)
+            .field("clusters", &self.clusters)
+            .field("codebooks", &self.codebooks)
+            .field("codes", &self.codes)
+            .field("storage", &self.storage.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl IvfPqIndex {
@@ -195,6 +214,7 @@ impl IvfPqIndex {
             clusters: Vec::new(),
             codebooks: Vec::new(),
             codes: Vec::new(),
+            storage: None,
         }
     }
 
@@ -256,7 +276,17 @@ impl IvfPqIndex {
             "IVF-PQ: dimension ({dim}) must be >= n_subvectors ({m})"
         );
 
-        let all_vecs: Vec<Vec<f32>> = self.documents.iter().map(|d| d.embedding.clone()).collect();
+        let all_vecs: Vec<Vec<f32>> = if let Some(ref storage) = self.storage {
+            let flat = storage.as_embeddings();
+            (0..n)
+                .map(|i| {
+                    let start = i * dim;
+                    flat[start..start + dim].to_vec()
+                })
+                .collect()
+        } else {
+            self.documents.iter().map(|d| d.embedding.clone()).collect()
+        };
 
         // ---- IVF: K‑Means ----
         let k = self.config.n_clusters.min(n);
@@ -402,6 +432,10 @@ impl IvfPqIndex {
 // ---------------------------------------------------------------------------
 
 impl Index for IvfPqIndex {
+    fn set_storage(&mut self, storage: Arc<dyn VectorStorage>) {
+        self.storage = Some(storage);
+    }
+
     fn insert(&mut self, docs: &[Document]) {
         self.insert(docs);
     }

@@ -8,10 +8,12 @@
 use crate::distance::Metric;
 use crate::doc::Document;
 use crate::index::{self, Index, ScoredDocument};
+use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// Brute‑force (linear scan) index.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BruteForceIndex {
     documents: Vec<Document>,
     metric: Metric,
@@ -23,6 +25,26 @@ pub struct BruteForceIndex {
     scales: Vec<f32>,
     /// Per‑dimension biases.
     biases: Vec<f32>,
+    /// Zero-copy embedding storage (optional).
+    storage: Option<Arc<dyn VectorStorage>>,
+    /// Embedding dimension (0 = unknown).
+    dim: usize,
+}
+
+impl std::fmt::Debug for BruteForceIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BruteForceIndex")
+            .field("documents", &self.documents)
+            .field("metric", &self.metric)
+            .field("sq", &self.sq)
+            .field("sq_rescore", &self.sq_rescore)
+            .field("embedding_i8", &self.embedding_i8)
+            .field("scales", &self.scales)
+            .field("biases", &self.biases)
+            .field("storage", &self.storage.as_ref().map(|_| ".."))
+            .field("dim", &self.dim)
+            .finish()
+    }
 }
 
 impl BruteForceIndex {
@@ -35,6 +57,8 @@ impl BruteForceIndex {
             embedding_i8: Vec::new(),
             scales: Vec::new(),
             biases: Vec::new(),
+            storage: None,
+            dim: 0,
         }
     }
 
@@ -48,6 +72,8 @@ impl BruteForceIndex {
             embedding_i8: Vec::new(),
             scales: Vec::new(),
             biases: Vec::new(),
+            storage: None,
+            dim: 0,
         }
     }
 
@@ -60,6 +86,8 @@ impl BruteForceIndex {
             embedding_i8: Vec::new(),
             scales: Vec::new(),
             biases: Vec::new(),
+            storage: None,
+            dim: 0,
         }
     }
 
@@ -73,7 +101,20 @@ impl BruteForceIndex {
 }
 
 impl Index for BruteForceIndex {
+    fn set_storage(&mut self, storage: Arc<dyn VectorStorage>) {
+        self.storage = Some(storage);
+    }
+
     fn insert(&mut self, docs: &[Document]) {
+        // Set embedding dimension from the first document that has one
+        if self.dim == 0 {
+            if let Some(doc) = docs.iter().find(|d| !d.embedding.is_empty()) {
+                self.dim = doc.embedding.len();
+            } else if let Some(doc) = self.documents.iter().find(|d| !d.embedding.is_empty()) {
+                self.dim = doc.embedding.len();
+            }
+        }
+
         if self.sq {
             if self.embedding_i8.is_empty() {
                 // First batch: compute per‑dim scale/bias from all existing + new
@@ -160,18 +201,40 @@ impl Index for BruteForceIndex {
             results.truncate(k);
             results
         } else {
-            let mut results: Vec<ScoredDocument> = self
-                .documents
-                .par_iter()
-                .filter(|d| !d.embedding.is_empty())
-                .map(|d| {
-                    let score = crate::distance::score(&d.embedding, query, self.metric);
-                    ScoredDocument {
-                        score,
-                        document: d.clone(),
-                    }
-                })
-                .collect();
+            let mut results: Vec<ScoredDocument> = if let Some(ref storage) = self.storage {
+                let emb_all = storage.as_embeddings();
+                let dim = self.dim;
+                self.documents
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, d)| !d.embedding.is_empty())
+                    .map(|(i, d)| {
+                        let start = i * dim;
+                        let emb = if start + dim <= emb_all.len() {
+                            &emb_all[start..start + dim]
+                        } else {
+                            &d.embedding
+                        };
+                        let score = crate::distance::score(emb, query, self.metric);
+                        ScoredDocument {
+                            score,
+                            document: d.clone(),
+                        }
+                    })
+                    .collect()
+            } else {
+                self.documents
+                    .par_iter()
+                    .filter(|d| !d.embedding.is_empty())
+                    .map(|d| {
+                        let score = crate::distance::score(&d.embedding, query, self.metric);
+                        ScoredDocument {
+                            score,
+                            document: d.clone(),
+                        }
+                    })
+                    .collect()
+            };
 
             results.sort_unstable_by(|a, b| {
                 b.score
@@ -263,19 +326,42 @@ impl Index for BruteForceIndex {
             results.truncate(k);
             results
         } else {
-            let mut results: Vec<ScoredDocument> = self
-                .documents
-                .par_iter()
-                .filter(|d| !d.embedding.is_empty())
-                .filter(|d| filter(d))
-                .map(|d| {
-                    let score = crate::distance::score(&d.embedding, query, self.metric);
-                    ScoredDocument {
-                        score,
-                        document: d.clone(),
-                    }
-                })
-                .collect();
+            let mut results: Vec<ScoredDocument> = if let Some(ref storage) = self.storage {
+                let emb_all = storage.as_embeddings();
+                let dim = self.dim;
+                self.documents
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, d)| !d.embedding.is_empty())
+                    .filter(|(_, d)| filter(d))
+                    .map(|(i, d)| {
+                        let start = i * dim;
+                        let emb = if start + dim <= emb_all.len() {
+                            &emb_all[start..start + dim]
+                        } else {
+                            &d.embedding
+                        };
+                        let score = crate::distance::score(emb, query, self.metric);
+                        ScoredDocument {
+                            score,
+                            document: d.clone(),
+                        }
+                    })
+                    .collect()
+            } else {
+                self.documents
+                    .par_iter()
+                    .filter(|d| !d.embedding.is_empty())
+                    .filter(|d| filter(d))
+                    .map(|d| {
+                        let score = crate::distance::score(&d.embedding, query, self.metric);
+                        ScoredDocument {
+                            score,
+                            document: d.clone(),
+                        }
+                    })
+                    .collect()
+            };
 
             results.sort_unstable_by(|a, b| {
                 b.score

@@ -16,9 +16,11 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::index::{self, Index, ScoredDocument};
+use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -126,7 +128,7 @@ impl Ord for Candidate {
 /// let results = index.search(&[1.0, 0.0, 0.0], 5);
 /// assert_eq!(results.len(), 1);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HnswIndex {
     documents: Vec<Document>,
     /// `graphs[layer][node_id]` -> neighbours (node IDs).
@@ -145,6 +147,27 @@ pub struct HnswIndex {
     scales: Vec<f32>,
     /// Per‑dimension biases.
     biases: Vec<f32>,
+    /// Zero-copy embedding storage (optional).
+    storage: Option<Arc<dyn VectorStorage>>,
+}
+
+impl std::fmt::Debug for HnswIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HnswIndex")
+            .field("documents", &self.documents)
+            .field("graphs", &self.graphs)
+            .field("node_layers", &self.node_layers)
+            .field("entry_point", &self.entry_point)
+            .field("config", &self.config)
+            .field("ml", &self.ml)
+            .field("embeddings_flat", &self.embeddings_flat)
+            .field("dim", &self.dim)
+            .field("embedding_i8", &self.embedding_i8)
+            .field("scales", &self.scales)
+            .field("biases", &self.biases)
+            .field("storage", &self.storage.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl HnswIndex {
@@ -162,6 +185,7 @@ impl HnswIndex {
             embedding_i8: Vec::new(),
             scales: Vec::new(),
             biases: Vec::new(),
+            storage: None,
         }
     }
 
@@ -191,13 +215,18 @@ impl HnswIndex {
     /// Return the embedding of node `node_id`.
     ///
     /// When `flat_embeddings` is enabled, returns a slice into the
-    /// contiguous `embeddings_flat` buffer.  Otherwise returns the
-    /// per-document `Vec<f32>`.
+    /// contiguous `embeddings_flat` buffer (or the zero-copy storage
+    /// view when available).  Otherwise returns the per-document `Vec<f32>`.
     #[inline]
     fn embedding(&self, node_id: usize) -> &[f32] {
         if self.config.flat_embeddings {
             let start = node_id * self.dim;
-            &self.embeddings_flat[start..start + self.dim]
+            let end = start + self.dim;
+            if let Some(ref storage) = self.storage {
+                &storage.as_embeddings()[start..end]
+            } else {
+                &self.embeddings_flat[start..end]
+            }
         } else {
             &self.documents[node_id].embedding
         }
@@ -390,8 +419,8 @@ impl HnswIndex {
             self.dim = emb.len();
         }
 
-        // Flat embedding: store in contiguous buffer
-        if self.config.flat_embeddings {
+        // Flat embedding: store in contiguous buffer (skip when storage provides zero-copy view)
+        if self.config.flat_embeddings && self.storage.is_none() {
             self.embeddings_flat.extend_from_slice(&emb);
         }
 
@@ -669,6 +698,10 @@ impl HnswIndex {
 // ---------------------------------------------------------------------------
 
 impl Index for HnswIndex {
+    fn set_storage(&mut self, storage: Arc<dyn VectorStorage>) {
+        self.storage = Some(storage);
+    }
+
     fn insert(&mut self, docs: &[Document]) {
         self.insert(docs);
     }

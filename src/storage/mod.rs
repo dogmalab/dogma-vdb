@@ -43,7 +43,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"DVDB";
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
+
+/// Alignment boundary for the embedding section (32 bytes = 256-bit SIMD).
+const EMB_ALIGN: usize = 32;
 
 /// Binary (native) storage for a collection of [`Document`]s.
 #[derive(Debug, Clone)]
@@ -96,6 +99,37 @@ impl BinStorage {
         self.path.exists()
     }
 
+    /// Read only the file header and return the embedding region info.
+    ///
+    /// Returns `(emb_offset, emb_len, dim, count)` where:
+    /// - `emb_offset`: byte offset where the embedding data starts
+    /// - `emb_len`: total byte length of the embedding section
+    /// - `dim`: embedding dimension (0 if no embeddings)
+    /// - `count`: number of documents
+    ///
+    /// This is useful for memory-mapping just the embedding region
+    /// without loading metadata into memory.
+    pub fn embedding_region(path: &Path) -> Result<(u64, usize, usize, usize)> {
+        let mut buf = [0u8; 24];
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        f.read_exact(&mut buf).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let _magic = &buf[0..4];
+        let _version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let dim = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
+        let count = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize;
+        let emb_offset =
+            u64::from_le_bytes([buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23]]);
+        let emb_len = count * dim * 4;
+        Ok((emb_offset, emb_len, dim, count))
+    }
+
     // ------------------------------------------------------------------
     // Encoding
     // ------------------------------------------------------------------
@@ -128,8 +162,8 @@ impl BinStorage {
         buf.extend_from_slice(&CURRENT_VERSION.to_le_bytes());
         buf.extend_from_slice(&(dim as u32).to_le_bytes());
         buf.extend_from_slice(&(count as u32).to_le_bytes());
-        // Pad to 4-byte alignment (f32 alignment requirement)
-        let pad = (4 - (meta_size % 4)) % 4;
+        // Pad to alignment boundary (32 bytes for SIMD, ≥4 for f32)
+        let pad = (EMB_ALIGN - (meta_size % EMB_ALIGN)) % EMB_ALIGN;
         let emb_offset = (header_size + meta_size + pad) as u64;
         buf.extend_from_slice(&emb_offset.to_le_bytes());
 
@@ -151,9 +185,8 @@ impl BinStorage {
         }
 
         // Padding for alignment
-        for _ in 0..pad {
-            buf.push(0);
-        }
+        let old_len = buf.len();
+        buf.resize(old_len + pad, 0);
 
         // Embeddings (contiguous f32 — pad empty embeddings with zeros)
         for doc in docs {
@@ -271,7 +304,7 @@ fn read_u32(data: &[u8], pos: &mut usize, path: &Path) -> Result<u32> {
     Ok(val)
 }
 
-fn read_str<'a>(data: &'a [u8], pos: &mut usize, len: usize, path: &Path) -> Result<String> {
+fn read_str(data: &[u8], pos: &mut usize, len: usize, path: &Path) -> Result<String> {
     if *pos + len > data.len() {
         return Err(Error::Io {
             path: path.to_path_buf(),
@@ -525,3 +558,5 @@ mod jsonl_tests {
         assert_eq!(loaded[0].metadata_val("lang"), Some("en"));
     }
 }
+
+pub mod traits;
