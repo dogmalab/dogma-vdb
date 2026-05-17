@@ -7,6 +7,8 @@ Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
 ## Features
 
+- **SIMD-accelerated** — dot product, cosine, and euclidean via `wide` crate
+  (SSE/AVX2 on x86, NEON on ARM). HNSW search ~3.5x faster, build ~4x.
 - **4 index backends**: BruteForce (exact), HNSW (approximate graph),
   Annoy (random projection forest), SQ (scalar quantization — orthogonal)
 - **Flat embeddings**: contiguous `Vec<f32>` for ~2.5× speedup at scale

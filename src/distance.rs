@@ -1,7 +1,13 @@
 //! Pure distance‑metric functions.
 //!
-//! Every function is a pure `fn(&[f32], &[f32]) -> f32` — no state,
-//! no allocations, no dependencies.
+//! Dot product and Euclidean distance use SIMD acceleration via the
+//! [`wide`] crate (SSE/AVX2 on x86, NEON on ARM) when processing
+//! chunks of 8 floats at a time.
+//!
+//! Falls back gracefully for the remaining <8 elements — no `unsafe`,
+//! no platform-specific code.
+
+use wide::f32x8;
 
 /// Supported similarity / distance metrics.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,23 +21,42 @@ pub enum Metric {
     Euclidean,
 }
 
-/// Dot product of two slices.
+/// Dot product of two slices, **SIMD‑accelerated**.
+///
+/// Processes 8 floats per iteration via `f32x8`; the remaining
+/// <8 elements are handled with scalar fallback.
 ///
 /// # Panics
 /// In debug mode if the slices have different lengths.
 #[inline]
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "dot product requires equal-length slices");
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+
+    let rem = a.len() % 8;
+    let (a_simd, a_tail) = a.split_at(a.len() - rem);
+    let (b_simd, b_tail) = b.split_at(b.len() - rem);
+
+    // SIMD body (chunks of 8)
+    let body: f32x8 = a_simd
+        .chunks_exact(8)
+        .zip(b_simd.chunks_exact(8))
+        .fold(f32x8::ZERO, |acc, (av, bv)| {
+            acc + f32x8::from(av) * f32x8::from(bv)
+        });
+
+    // Tail (<8)
+    let tail: f32 = a_tail.iter().zip(b_tail.iter()).map(|(x, y)| x * y).sum();
+
+    body.reduce_add() + tail
 }
 
-/// Magnitude (L2 norm) of a vector.
+/// Magnitude (L2 norm) of a vector, **SIMD‑accelerated**.
 #[inline]
 pub fn magnitude(v: &[f32]) -> f32 {
-    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+    dot(v, v).sqrt()
 }
 
-/// Cosine similarity.
+/// Cosine similarity, **SIMD‑accelerated**.
 ///
 /// Returns 0 when either vector has zero magnitude.
 #[inline]
@@ -44,7 +69,9 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot(a, b) / (mag_a * mag_b)
 }
 
-/// Euclidean distance.
+/// Euclidean distance, **SIMD‑accelerated**.
+///
+/// Uses `f32x8` to compute squared differences in parallel.
 #[inline]
 pub fn euclidean(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(
@@ -52,11 +79,29 @@ pub fn euclidean(a: &[f32], b: &[f32]) -> f32 {
         b.len(),
         "euclidean distance requires equal-length slices"
     );
-    a.iter()
-        .zip(b.iter())
+
+    let rem = a.len() % 8;
+    let (a_simd, a_tail) = a.split_at(a.len() - rem);
+    let (b_simd, b_tail) = b.split_at(b.len() - rem);
+
+    // SIMD body
+    let body: f32x8 =
+        a_simd
+            .chunks_exact(8)
+            .zip(b_simd.chunks_exact(8))
+            .fold(f32x8::ZERO, |acc, (av, bv)| {
+                let d = f32x8::from(av) - f32x8::from(bv);
+                acc + d * d
+            });
+
+    // Tail (<8)
+    let tail: f32 = a_tail
+        .iter()
+        .zip(b_tail.iter())
         .map(|(x, y)| (x - y) * (x - y))
-        .sum::<f32>()
-        .sqrt()
+        .sum();
+
+    (body.reduce_add() + tail).sqrt()
 }
 
 /// Convenience: applies the chosen metric.
@@ -80,7 +125,7 @@ mod tests {
     fn test_dot_product() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![4.0, 5.0, 6.0];
-        assert!((dot(&a, &b) - 32.0).abs() < 1e-6); // 1*4 + 2*5 + 3*6 = 32
+        assert!((dot(&a, &b) - 32.0).abs() < 1e-6);
     }
 
     #[test]
@@ -99,9 +144,25 @@ mod tests {
     }
 
     #[test]
+    fn test_dot_8_exact() {
+        // Exactly 8 elements — exercises SIMD body path
+        let a = vec![1.0; 8];
+        let b = vec![1.0; 8];
+        assert!((dot(&a, &b) - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dot_10_elements() {
+        // 10 elements — exercises head + body + tail
+        let a = vec![1.0; 10];
+        let b = vec![1.0; 10];
+        assert!((dot(&a, &b) - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_magnitude() {
         let v = vec![3.0, 4.0];
-        assert!((magnitude(&v) - 5.0).abs() < 1e-6); // sqrt(9+16) = 5
+        assert!((magnitude(&v) - 5.0).abs() < 1e-6);
     }
 
     #[test]
@@ -165,7 +226,14 @@ mod tests {
     fn test_euclidean_known() {
         let a = vec![0.0, 0.0];
         let b = vec![3.0, 4.0];
-        assert!((euclidean(&a, &b) - 5.0).abs() < 1e-6); // sqrt((3-0)^2 + (4-0)^2) = 5
+        assert!((euclidean(&a, &b) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_euclidean_10_elements() {
+        let a = vec![1.0; 10];
+        let b = vec![0.0; 10];
+        assert!((euclidean(&a, &b) - 3.162277).abs() < 0.001);
     }
 
     #[test]
@@ -196,7 +264,7 @@ mod tests {
         let a = vec![1.0, 2.0];
         let b = vec![3.0, 4.0];
         let s = score(&a, &b, Metric::Dot);
-        assert!((s - 11.0).abs() < 1e-6); // 1*3 + 2*4 = 11
+        assert!((s - 11.0).abs() < 1e-6);
     }
 
     #[test]
@@ -204,6 +272,6 @@ mod tests {
         let a = vec![0.0, 0.0];
         let b = vec![3.0, 4.0];
         let s = score(&a, &b, Metric::Euclidean);
-        assert!((s - (-5.0)).abs() < 1e-6); // negated distance
+        assert!((s - (-5.0)).abs() < 1e-6);
     }
 }
