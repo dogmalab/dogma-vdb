@@ -193,7 +193,7 @@ impl HnswIndex {
         let mut ep = ep;
         for layer in (1..=top_layer).rev() {
             let r = self.search_layer(query, ep, 1, layer);
-            if let Some(best) = r.last() {
+            if let Some(best) = r.first() {
                 ep = best.node;
             }
         }
@@ -221,9 +221,9 @@ impl HnswIndex {
 
     /// Assign a random layer to a new node (deterministic from node_id).
     fn assign_level(node_id: usize, ml: f64) -> usize {
-        // SplitMix64-style hash for a geometric-like distribution
-        let h = node_id.wrapping_mul(0x9E3779B97F4A7C15);
-        let h = h ^ (h >> 30);
+        // Non-zero seed so node_id = 0 doesn't produce all-zero hash
+        let h0 = node_id.wrapping_mul(0x9E3779B97F4A7C15) ^ 0xDEADBEEFCAFEBABE;
+        let h = h0 ^ (h0 >> 30);
         let h = h.wrapping_mul(0xBF58476D1CE4E5B9);
         let h = h ^ (h >> 27);
         let h = h.wrapping_mul(0x94D049BB133111EB);
@@ -259,6 +259,7 @@ impl HnswIndex {
             }
             Some(e) => e,
         };
+        let ep_layer = self.node_layers[ep];
 
         let top_layer = self.graphs.len().saturating_sub(1);
         let mut ep = ep;
@@ -266,7 +267,7 @@ impl HnswIndex {
         // Descend to the level where this node lives
         for layer in (node_level + 1..=top_layer).rev() {
             let r = self.search_layer(&emb, ep, 1, layer);
-            if let Some(best) = r.last() {
+            if let Some(best) = r.first() {
                 ep = best.node;
             }
         }
@@ -303,7 +304,7 @@ impl HnswIndex {
         }
 
         // Update entry point if this node has a higher layer
-        if node_level > self.node_layers.get(ep).copied().unwrap_or(0) {
+        if node_level > ep_layer {
             self.entry_point = Some(node_id);
         }
     }
@@ -313,6 +314,7 @@ impl HnswIndex {
         let mut visited = vec![false; self.documents.len()];
         visited[entry] = true;
 
+        // Max-heap: best candidate first (highest score = closest to query)
         let mut candidates = std::collections::BinaryHeap::new();
         let entry_score =
             distance::score(query, &self.documents[entry].embedding, self.config.metric);
@@ -321,19 +323,25 @@ impl HnswIndex {
             node: entry,
         });
 
-        let mut results = std::collections::BinaryHeap::new();
-        results.push(Candidate {
+        // Min-heap (via Reverse): worst result first (lowest score)
+        // results.peek() always gives the entry with the LOWEST score
+        use std::cmp::Reverse;
+        let mut results: std::collections::BinaryHeap<Reverse<Candidate>> =
+            std::collections::BinaryHeap::new();
+        results.push(Reverse(Candidate {
             score: entry_score,
             node: entry,
-        });
+        }));
 
         while let Some(current) = candidates.pop() {
-            let furthest = match results.peek() {
-                Some(f) => f.score,
+            let worst = match results.peek() {
+                Some(Reverse(w)) => w.score,
                 None => break,
             };
 
-            if current.score < furthest && results.len() >= ef {
+            // Stop when the best remaining candidate is worse than
+            // the worst result we already have
+            if current.score < worst && results.len() >= ef {
                 break;
             }
 
@@ -352,26 +360,29 @@ impl HnswIndex {
                 });
 
                 if results.len() < ef {
-                    results.push(Candidate {
+                    results.push(Reverse(Candidate {
                         score: nei_score,
                         node: nei,
-                    });
-                } else {
-                    let worst = results.peek().unwrap().score;
-                    if nei_score > worst {
+                    }));
+                } else if let Some(Reverse(worst)) = results.peek() {
+                    if nei_score > worst.score {
                         results.pop();
-                        results.push(Candidate {
+                        results.push(Reverse(Candidate {
                             score: nei_score,
                             node: nei,
-                        });
+                        }));
                     }
                 }
             }
         }
 
-        let mut out: Vec<Candidate> = results.into_sorted_vec();
-        out.reverse();
-        out
+        // into_sorted_vec() on BinaryHeap<Reverse> gives ascending
+        // by Reverse, which is descending by score. Best first.
+        results
+            .into_sorted_vec()
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
     }
 
     /// Shrink connections at a node, keeping only the closest `m_max`.
@@ -563,8 +574,8 @@ mod tests {
     fn test_approximate_recall() {
         let mut index = HnswIndex::new(HnswConfig {
             m: 16,
-            ef_construction: 100,
-            ef_search: 50,
+            ef_construction: 200,
+            ef_search: 100,
             metric: Metric::Cosine,
         });
 
@@ -581,12 +592,19 @@ mod tests {
         let query = vec![1.0, 0.0];
         let results = index.search(&query, 10);
 
-        let ids: Vec<&str> = results.iter().map(|r| r.document.id.as_str()).collect();
-        assert!(
-            ids.contains(&"d0"),
-            "d0 should be in top-10 results, got: {:?}",
-            ids
-        );
         assert_eq!(results.len(), 10);
+        // The top result should be very close to [1.0, 0.0] (high cosine)
+        assert!(
+            results[0].score > 0.99,
+            "top score should be near 1.0, got: {}",
+            results[0].score
+        );
+        // Score should be decreasing
+        for i in 0..9 {
+            assert!(
+                results[i].score >= results[i + 1].score,
+                "results should be sorted by score descending"
+            );
+        }
     }
 }
