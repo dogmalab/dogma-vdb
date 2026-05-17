@@ -17,7 +17,6 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::index::{Index, ScoredDocument};
-use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
@@ -388,11 +387,13 @@ impl HnswIndex {
             return;
         }
 
-        // Phase 1: score all candidates in parallel
+        let metric = self.config.metric;
+
+        // Phase 1: score all candidates (sequential — ~32 items, rayon overhead > benefit)
         let mut candidates: Vec<(usize, f32)> = self.graphs[layer][node]
-            .par_iter()
+            .iter()
             .map(|&n| {
-                let s = distance::score(centre, &self.documents[n].embedding, self.config.metric);
+                let s = distance::score(centre, &self.documents[n].embedding, metric);
                 (n, s)
             })
             .collect();
@@ -400,28 +401,35 @@ impl HnswIndex {
         // Sort by score descending (closest first)
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
-        // Phase 2: heuristic selection — prefer diverse connections
+        // Phase 2: heuristic selection — only inspect top candidates
+        // on layer 0, where connections matter most.  With m_max = 16
+        // on layer 0, checking the top 8 is enough to ensure diversity
+        // near the insertion point.  Everything beyond goes straight to
+        // discard (equivalent to simple-then-keep-closest).
+        let check_limit = if layer == 0 { (m_max / 2).max(1) } else { 0 };
+
         let mut results = Vec::with_capacity(m_max);
         let mut discard: Vec<usize> = Vec::with_capacity(candidates.len());
 
-        for &(cand_id, cand_score) in &candidates {
+        for (i, &(cand_id, cand_score)) in candidates.iter().enumerate() {
             if results.len() >= m_max {
                 discard.push(cand_id);
                 continue;
             }
 
-            // A candidate is diverse if it's closer to the centre than to
-            // any already-selected result — i.e. it covers a different
-            // region of the space.
-            let is_diverse = results.iter().all(|&(r_id, _r_score)| {
-                let r_id: usize = r_id;
-                let d_cand_r = distance::score(
-                    &self.documents[cand_id].embedding,
-                    &self.documents[r_id].embedding,
-                    self.config.metric,
-                );
-                cand_score >= d_cand_r
-            });
+            let is_diverse = if i < check_limit {
+                results.iter().all(|&(r_id, _r_score)| {
+                    let r_id: usize = r_id;
+                    let d_cand_r = distance::score(
+                        &self.documents[cand_id].embedding,
+                        &self.documents[r_id].embedding,
+                        metric,
+                    );
+                    cand_score >= d_cand_r
+                })
+            } else {
+                false
+            };
 
             if is_diverse {
                 results.push((cand_id, cand_score));
@@ -433,8 +441,8 @@ impl HnswIndex {
         // Fill remaining slots from discard (closest first)
         if results.len() < m_max && !discard.is_empty() {
             discard.sort_by(|a, b| {
-                let sa = distance::score(centre, &self.documents[*a].embedding, self.config.metric);
-                let sb = distance::score(centre, &self.documents[*b].embedding, self.config.metric);
+                let sa = distance::score(centre, &self.documents[*a].embedding, metric);
+                let sb = distance::score(centre, &self.documents[*b].embedding, metric);
                 sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
             });
             for &d in discard.iter().take(m_max - results.len()) {
