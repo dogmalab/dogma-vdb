@@ -22,7 +22,9 @@ use crate::doc::Document;
 /// Returns `(Vec<f32>, Vec<f32>)` — one pair per dimension.
 /// For each dimension `d`:
 ///   `scale[d] = (max[d] - min[d]) / 255.0`
-///   `bias[d]  = min[d]`
+///   `bias[d]  = (min[d] + max[d]) / 2.0`   (mid‑point, so the quantised
+///     range `[min, max]` maps to roughly `[-128, 127]` instead of
+///     `[0, 255]`, avoiding heavy clamping for centred data).
 ///
 /// If the dataset is empty or has no embeddings, returns two empty `Vec`s.
 pub fn compute_scale_bias_per_dim(docs: &[Document]) -> (Vec<f32>, Vec<f32>) {
@@ -58,7 +60,16 @@ pub fn compute_scale_bias_per_dim(docs: &[Document]) -> (Vec<f32>, Vec<f32>) {
         .map(|(&mn, &mx)| if mx > mn { (mx - mn) / 255.0 } else { 1.0 })
         .collect();
 
-    (scales, mins)
+    // Mid‑point bias so [min, max] maps to ~[-128, 127] instead of [0, 255].
+    // This avoids catastrophic clamping when data is centred around zero
+    // (e.g. normalised embeddings on a unit sphere).
+    let biases: Vec<f32> = mins
+        .iter()
+        .zip(maxs.iter())
+        .map(|(&mn, &mx)| (mn + mx) / 2.0)
+        .collect();
+
+    (scales, biases)
 }
 
 /// Quantize an `f32` embedding using per‑dimension `scales` and `biases`.
@@ -200,12 +211,12 @@ mod tests {
         let (scales, biases) = compute_scale_bias_per_dim(&docs);
         assert_eq!(scales.len(), 2);
         assert_eq!(biases.len(), 2);
-        // Dim 0: range [0, 10] → scale = 10/255
+        // Dim 0: range [0, 10] → scale = 10/255, bias = mid = 5
         assert!((scales[0] - 10.0 / 255.0).abs() < 1e-6);
-        assert!((biases[0] - 0.0).abs() < 1e-6);
-        // Dim 1: range [100, 200] → scale = 100/255
+        assert!((biases[0] - 5.0).abs() < 1e-6);
+        // Dim 1: range [100, 200] → scale = 100/255, bias = mid = 150
         assert!((scales[1] - 100.0 / 255.0).abs() < 1e-6);
-        assert!((biases[1] - 100.0).abs() < 1e-6);
+        assert!((biases[1] - 150.0).abs() < 1e-6);
     }
 
     #[test]
@@ -217,7 +228,7 @@ mod tests {
                 .embedding(vec![5.0, 10.0])
                 .build(),
         ];
-        let (scales, biases) = compute_scale_bias_per_dim(&docs);
+        let (scales, _biases) = compute_scale_bias_per_dim(&docs);
         assert_eq!(scales.len(), 2);
         // Both dims have the same value, scale = 1.0 (fallback)
         assert!((scales[0] - 1.0).abs() < 1e-6);

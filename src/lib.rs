@@ -54,7 +54,7 @@ pub mod prelude {
     pub use crate::embedding::Embedder;
     pub use crate::error::{Error, Result};
     pub use crate::index::{
-        AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument,
+        BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
     };
     pub use crate::storage::JsonlStorage;
 }

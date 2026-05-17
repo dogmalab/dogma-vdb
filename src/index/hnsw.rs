@@ -16,6 +16,7 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::index::{self, Index, ScoredDocument};
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
@@ -232,12 +233,37 @@ impl HnswIndex {
     ///
     /// Each document **must** have a non-empty embedding.  Documents
     /// without an embedding are silently skipped.
+    ///
+    /// When `sq=true`, scale/bias is computed from the **full set** of
+    /// documents (existing + new), and all embeddings are re‑quantised
+    /// after insertion — identical strategy to [`BruteForceIndex`].
     pub fn insert(&mut self, docs: &[Document]) {
         for doc in docs {
             if doc.embedding.is_empty() {
                 continue;
             }
             self.insert_one(doc.clone());
+        }
+
+        // Post‑insertion SQ quantisation: compute scale/bias from ALL
+        // documents (not just the first one), then re‑quantise everything.
+        // Mirrors the approach used by BruteForceIndex — see sq.rs.
+        if self.config.sq {
+            use crate::index::{compute_scale_bias_per_dim, quantize};
+            let (sc, bi) = compute_scale_bias_per_dim(&self.documents);
+            self.scales = sc;
+            self.biases = bi;
+            self.embedding_i8 = self
+                .documents
+                .par_iter()
+                .map(|d| {
+                    if d.embedding.is_empty() {
+                        Vec::new()
+                    } else {
+                        quantize(&d.embedding, &self.scales, &self.biases)
+                    }
+                })
+                .collect();
         }
     }
 
@@ -367,19 +393,6 @@ impl HnswIndex {
         // Flat embedding: store in contiguous buffer
         if self.config.flat_embeddings {
             self.embeddings_flat.extend_from_slice(&emb);
-        }
-
-        // SQ quantisation
-        if self.config.sq {
-            if self.scales.is_empty() {
-                // First document: compute per‑dim scale/bias from this doc
-                let fake_docs = [doc.clone()];
-                let (sc, bi) = crate::index::compute_scale_bias_per_dim(&fake_docs);
-                self.scales = sc;
-                self.biases = bi;
-            }
-            self.embedding_i8
-                .push(crate::index::quantize(&emb, &self.scales, &self.biases));
         }
 
         // Keep doc.embedding intact for persistence (JSONL needs it)
@@ -866,6 +879,76 @@ mod tests {
                 "results should be sorted by score descending"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // SQ + HNSW recall test
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_sq_recall_high() {
+        // HNSW with SQ + rescore
+        let mut hnsw_sq = HnswIndex::new(HnswConfig {
+            m: 16,
+            ef_construction: 200,
+            ef_search: 100,
+            metric: Metric::Cosine,
+            flat_embeddings: false,
+            sq: true,
+            sq_rescore: true,
+        });
+
+        // Baseline: exact BruteForce (f32, no SQ)
+        let mut bf = crate::index::BruteForceIndex::new(Metric::Cosine);
+
+        // 200 docs on a 2D unit circle — ensures varied distribution
+        let mut docs = Vec::with_capacity(200);
+        for i in 0..200 {
+            let angle = i as f64 * 0.0314159; // 2π / 200
+            docs.push(make_doc(
+                &format!("d{}", i),
+                vec![angle.cos() as f32, angle.sin() as f32],
+            ));
+        }
+        hnsw_sq.insert(&docs);
+        bf.insert(&docs);
+
+        // 5 queries spread around the circle
+        let queries: Vec<Vec<f32>> = (0..5)
+            .map(|i| {
+                let angle = i as f64 * 1.256637; // ~72° steps
+                vec![angle.cos() as f32, angle.sin() as f32]
+            })
+            .collect();
+
+        let k = 10;
+        let mut total_recall = 0.0;
+        let n_queries = queries.len();
+
+        for query in &queries {
+            let hnsw_results = hnsw_sq.search(query, k);
+            let bf_results = bf.search(query, k);
+
+            assert_eq!(hnsw_results.len(), k, "HNSW should return {k} results");
+            assert_eq!(bf_results.len(), k, "BF should return {k} results");
+
+            // Recall@10: how many of BF's top-k are in HNSW's top-k?
+            let bf_ids: std::collections::HashSet<&str> =
+                bf_results.iter().map(|r| r.document.id.as_str()).collect();
+            let hits = hnsw_results
+                .iter()
+                .filter(|r| bf_ids.contains(r.document.id.as_str()))
+                .count();
+            let recall = hits as f64 / k as f64;
+            total_recall += recall;
+        }
+
+        let avg_recall = total_recall / n_queries as f64;
+        assert!(
+            avg_recall >= 0.85,
+            "HNSW+SQ average recall@10 too low: {:.2}% (expected >= 85%)",
+            avg_recall * 100.0
+        );
     }
 
     // ------------------------------------------------------------------

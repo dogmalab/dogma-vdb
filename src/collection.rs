@@ -12,7 +12,7 @@ use crate::distance::Metric;
 use crate::doc::Document;
 use crate::error::Result;
 use crate::index::{
-    AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument,
+    BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
 };
 use crate::storage::BinStorage;
 use std::fmt;
@@ -54,11 +54,11 @@ impl Collection {
                 sq: cfg.sq,
                 sq_rescore: cfg.sq_rescore,
             })),
-            "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
-                n_trees: cfg.annoy_n_trees,
-                search_k: cfg.annoy_search_k,
+            "ivf_pq" => Box::new(IvfPqIndex::new(IvfPqConfig {
+                n_clusters: cfg.ivf_pq_n_clusters,
+                n_subvectors: cfg.ivf_pq_n_subvectors,
+                n_probe: cfg.ivf_pq_n_probe,
                 metric,
-                leaf_size: 10,
             })),
             _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };
@@ -68,8 +68,7 @@ impl Collection {
 
     /// Open a collection with an explicit index type override.
     ///
-    /// `index_type` can be `"bruteforce"` or `"hnsw"`.
-    /// HNSW parameters are still read from config.
+    /// `index_type` can be `"bruteforce"`, `"hnsw"`, or `"ivf_pq"`.
     pub fn open_with(
         path: impl Into<PathBuf>,
         index_type: &str,
@@ -89,11 +88,11 @@ impl Collection {
                 sq: cfg.sq,
                 sq_rescore: cfg.sq_rescore,
             })),
-            "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
-                n_trees: cfg.annoy_n_trees,
-                search_k: cfg.annoy_search_k,
+            "ivf_pq" => Box::new(IvfPqIndex::new(IvfPqConfig {
+                n_clusters: cfg.ivf_pq_n_clusters,
+                n_subvectors: cfg.ivf_pq_n_subvectors,
+                n_probe: cfg.ivf_pq_n_probe,
                 metric,
-                leaf_size: 10,
             })),
             _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };

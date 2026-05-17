@@ -85,12 +85,14 @@ pub struct CollectionConfig {
     pub hnsw_ef_search: usize,
     #[serde(default)]
     pub hnsw_flat_embeddings: bool,
-    // Annoy-specific (only used when index_type == "annoy")
-    #[serde(default = "CollectionConfig::default_annoy_n_trees")]
-    pub annoy_n_trees: usize,
-    #[serde(default = "CollectionConfig::default_annoy_search_k")]
-    pub annoy_search_k: i32,
-    // Scalar Quantization (orthogonal — applies to any backend)
+    // IVF-PQ specific
+    #[serde(default = "CollectionConfig::default_ivf_pq_n_clusters")]
+    pub ivf_pq_n_clusters: usize,
+    #[serde(default = "CollectionConfig::default_ivf_pq_n_subvectors")]
+    pub ivf_pq_n_subvectors: usize,
+    #[serde(default = "CollectionConfig::default_ivf_pq_n_probe")]
+    pub ivf_pq_n_probe: usize,
+    // Scalar Quantization
     #[serde(default)]
     pub sq: bool,
     /// When `sq=true` and this is `true`, run exact f32 rescoring on
@@ -117,11 +119,14 @@ impl CollectionConfig {
     fn default_hnsw_ef_search() -> usize {
         50
     }
-    fn default_annoy_n_trees() -> usize {
-        10
+    fn default_ivf_pq_n_clusters() -> usize {
+        256
     }
-    fn default_annoy_search_k() -> i32 {
-        -1
+    fn default_ivf_pq_n_subvectors() -> usize {
+        8
+    }
+    fn default_ivf_pq_n_probe() -> usize {
+        8
     }
 }
 
@@ -261,11 +266,16 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
                 cfg.collection.hnsw_ef_search = val.parse().unwrap_or(cfg.collection.hnsw_ef_search)
             }
             "COLLECTION_HNSW_FLAT" => cfg.collection.hnsw_flat_embeddings = val == "true",
-            "COLLECTION_ANNOY_N_TREES" => {
-                cfg.collection.annoy_n_trees = val.parse().unwrap_or(cfg.collection.annoy_n_trees)
+            "COLLECTION_IVF_PQ_N_CLUSTERS" => {
+                cfg.collection.ivf_pq_n_clusters =
+                    val.parse().unwrap_or(cfg.collection.ivf_pq_n_clusters)
             }
-            "COLLECTION_ANNOY_SEARCH_K" => {
-                cfg.collection.annoy_search_k = val.parse().unwrap_or(cfg.collection.annoy_search_k)
+            "COLLECTION_IVF_PQ_N_SUBVECTORS" => {
+                cfg.collection.ivf_pq_n_subvectors =
+                    val.parse().unwrap_or(cfg.collection.ivf_pq_n_subvectors)
+            }
+            "COLLECTION_IVF_PQ_N_PROBE" => {
+                cfg.collection.ivf_pq_n_probe = val.parse().unwrap_or(cfg.collection.ivf_pq_n_probe)
             }
             "COLLECTION_SQ" => cfg.collection.sq = val == "true",
             "COLLECTION_SQ_RESCORE" => cfg.collection.sq_rescore = val == "true",
@@ -293,8 +303,9 @@ impl Default for Config {
                 hnsw_ef_construction: 200,
                 hnsw_ef_search: 50,
                 hnsw_flat_embeddings: false,
-                annoy_n_trees: 10,
-                annoy_search_k: -1,
+                ivf_pq_n_clusters: 256,
+                ivf_pq_n_subvectors: 8,
+                ivf_pq_n_probe: 8,
                 sq: false,
                 sq_rescore: false,
             },

@@ -1,17 +1,18 @@
 //! Vector index trait and implementations.
 //!
-//! Two backends are provided:
+//! Three backends are provided:
 //! - [`BruteForceIndex`] — precise, O(n·d) linear scan
 //! - [`HnswIndex`] — approximate, O(log n) via hierarchical graph
+//! - [`IvfPqIndex`] — approximate, via IVF + Product Quantisation
 
-mod annoy;
 mod brute_force;
 mod hnsw;
+mod ivf_pq;
 mod sq;
 
-pub use annoy::{AnnoyConfig, AnnoyIndex};
 pub use brute_force::BruteForceIndex;
 pub use hnsw::{HnswConfig, HnswIndex};
+pub use ivf_pq::{IvfPqConfig, IvfPqIndex};
 pub use sq::*;
 
 use crate::doc::Document;

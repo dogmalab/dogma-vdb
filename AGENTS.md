@@ -30,7 +30,8 @@ Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas clara
 | Index trait | `src/index/mod.rs` | 67 | - | Completo |
 | Index (BruteForce) | `src/index/brute_force.rs` | 440 | 18 | Completo |
 | Index (HNSW) | `src/index/hnsw.rs` | ~840 | 21 | Completo |
-| Index (Annoy) | `src/index/annoy.rs` | ~530 | 10 | Completo |
+| Index (IVF-PQ) | `src/index/ivf_pq.rs` | ~400 | 8 | Nuevo |
+| Index (Annoy) | ~~`src/index/annoy.rs`~~ | — | — | **Eliminado** |
 | SQ module | `src/index/sq.rs` | ~230 | 8 | Completo |
 | Watcher | `src/watch.rs` | 56 | - | **SKELETON** (`todo!()`) |
 | MCP Server | `src/mcp.rs` | 36 | - | **SKELETON** (`todo!()`) |
@@ -45,10 +46,10 @@ Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas clara
 | `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | Completo (FastEmbedder con ONNX MiniLM-L6-v2) |
 
 ### Tests
-- Unitarios: 135 pasan
+- Unitarios: 139 pasan
 - Integracion: 9 pasan
 - Doc-tests: 8 pasan, 2 ignorados
-- **Total: 152 tests, 0 fallos**
+- **Total: 156 tests, 0 fallos**
 
 ---
 
@@ -297,7 +298,7 @@ Si cumple todo, el codigo puede mergearse.
 - [x] HNSW flat_embeddings
 - [x] SQ module + integracion en BF y HNSW
 - [x] SQ rescore (recuperar recall con f32)
-- [x] Annoy index (random projection forest)
+- [x] IVF-PQ index (inverted file + product quantization)
 - [x] Config env vars para todos los campos
 - [ ] Implementar `watch.rs` (file system watcher, feature = "watch")
 - [ ] Implementar `mcp.rs` (MCP server, feature = "mcp")

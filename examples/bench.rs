@@ -3,11 +3,13 @@
 //! Run: cargo run --release --example bench
 //!
 //! Generates random 128-dim vectors and measures query latency for
-//! BruteForce, HNSW, Annoy, and SQ variants.
+//! BruteForce, HNSW, IVF-PQ, and SQ variants.
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
-use dogma_vdb::index::{AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index};
+use dogma_vdb::index::{
+    BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex,
+};
 use std::time::Instant;
 
 fn random_vec(dim: usize) -> Vec<f32> {
@@ -168,25 +170,25 @@ fn main() {
             100,
         );
 
-        // --- Annoy ---
-        let mut annoy = AnnoyIndex::new(AnnoyConfig {
-            n_trees: 10,
-            search_k: -1,
+        // --- IVF-PQ ---
+        let mut ivf_pq = IvfPqIndex::new(IvfPqConfig {
+            n_clusters: 256.min(n),
+            n_subvectors: 8,
+            n_probe: 8,
             metric: Metric::Cosine,
-            leaf_size: 10,
         });
-        let start_a = Instant::now();
-        annoy.insert(&docs);
-        let annoy_build = start_a.elapsed();
+        let start_ivf = Instant::now();
+        ivf_pq.insert(&docs);
+        let ivf_build = start_ivf.elapsed();
         bench(
-            "Annoy (10 trees)",
+            "IVF-PQ",
             |q, k| {
-                annoy.search(q, k);
+                ivf_pq.search(q, k);
             },
             100,
         );
 
-        println!("  Build time: HNSW={idx_time:.3?}  Annoy={annoy_build:.3?}");
+        println!("  Build time: HNSW={idx_time:.3?}  IVF-PQ={ivf_build:.3?}");
 
         // --- Recall (approximate) ---
         let bf_results = bf.search(&docs[0].embedding, k);
@@ -198,7 +200,7 @@ fn main() {
             ("HNSW+SQ", hnsw_sq.search(&docs[0].embedding, k)),
             ("HNSW+SQ+Rescore", hnsw_sqr.search(&docs[0].embedding, k)),
             ("HNSW+Flat", hnsw_f.search(&docs[0].embedding, k)),
-            ("Annoy", annoy.search(&docs[0].embedding, k)),
+            ("IVF-PQ", ivf_pq.search(&docs[0].embedding, k)),
             ("BF+SQ", bf_sq.search(&docs[0].embedding, k)),
             ("BF+SQ+Rescore", bf_sqr.search(&docs[0].embedding, k)),
         ] {
