@@ -15,7 +15,7 @@
 
 use crate::distance::{self, Metric};
 use crate::doc::Document;
-use crate::index::{Index, ScoredDocument};
+use crate::index::{self, Index, ScoredDocument};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
@@ -135,18 +135,15 @@ pub struct HnswIndex {
     /// Current entry point (node with the highest layer).
     entry_point: Option<usize>,
     config: HnswConfig,
-    /// `1.0 / ln(m)` — layer multiplier.
     ml: f64,
-    /// Flat contiguous embeddings (only used when `flat_embeddings=true`).
     embeddings_flat: Vec<f32>,
-    /// Dimensionality of each embedding (only used with flat).
     dim: usize,
     /// Quantised embeddings (only used when `sq=true`).
     embedding_i8: Vec<Vec<i8>>,
-    /// Global quantisation scale.
-    scale: f32,
-    /// Global quantisation bias.
-    bias: f32,
+    /// Per‑dimension scale factors.
+    scales: Vec<f32>,
+    /// Per‑dimension biases.
+    biases: Vec<f32>,
 }
 
 impl HnswIndex {
@@ -162,8 +159,8 @@ impl HnswIndex {
             embeddings_flat: Vec::new(),
             dim: 0,
             embedding_i8: Vec::new(),
-            scale: 1.0,
-            bias: 0.0,
+            scales: Vec::new(),
+            biases: Vec::new(),
         }
     }
 
@@ -206,23 +203,18 @@ impl HnswIndex {
     }
 
     /// Return the query-to-document distance (higher = more similar).
+    ///
+    /// In the SQ path this assumes `query` has already been quantised
+    /// externally — see [`search_layer_i8`].
     #[inline]
     fn score_query(&self, query: &[f32], node_id: usize) -> f32 {
-        if self.config.sq
-            && node_id < self.embedding_i8.len()
-            && !self.embedding_i8[node_id].is_empty()
-        {
-            let query_i8 = crate::index::quantize_query(query, self.scale, self.bias);
-            crate::index::score_i8(
-                &query_i8,
-                &self.embedding_i8[node_id],
-                self.config.metric,
-                self.scale,
-                self.bias,
-            )
-        } else {
-            distance::score(query, self.embedding(node_id), self.config.metric)
-        }
+        distance::score(query, self.embedding(node_id), self.config.metric)
+    }
+
+    /// Like [`score_query`](Self::score_query) but uses quantised i8 embeddings.
+    #[inline]
+    fn score_query_i8(&self, query_i8: &[i8], node_id: usize) -> f32 {
+        index::score_i8(query_i8, &self.embedding_i8[node_id], self.config.metric)
     }
 
     /// Return the distance between two indexed nodes.
@@ -264,47 +256,73 @@ impl HnswIndex {
             None => return Vec::new(),
         };
 
-        // 1. Descend through upper layers with ef = 1
-        let top_layer = self.graphs.len().saturating_sub(1);
-        let mut ep = ep;
-        for layer in (1..=top_layer).rev() {
-            let r = self.search_layer(query, ep, 1, layer);
-            if let Some(best) = r.first() {
-                ep = best.node;
+        if self.config.sq {
+            // Quantize query ONCE, use i8 path for all layer traversals
+            let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
+
+            let top_layer = self.graphs.len().saturating_sub(1);
+            let mut ep = ep;
+            for layer in (1..=top_layer).rev() {
+                let r = self.search_layer_i8(&query_i8, ep, 1, layer);
+                if let Some(best) = r.first() {
+                    ep = best.node;
+                }
             }
-        }
 
-        // 2. Full search at layer 0
-        let candidates = self.search_layer(query, ep, ef, 0);
+            let candidates = self.search_layer_i8(&query_i8, ep, ef, 0);
 
-        // 3. Take top-k* (more if rescoring) and wrap into ScoredDocument
-        let take_n = if self.config.sq && self.config.sq_rescore {
-            (k * 5).max(self.config.ef_search)
-        } else {
-            k
-        };
-        let mut scored: Vec<ScoredDocument> = candidates
-            .into_iter()
-            .take(take_n)
-            .map(|c| ScoredDocument {
-                score: c.score,
-                document: self.documents[c.node].clone(),
-            })
-            .collect();
+            let take_n = if self.config.sq_rescore {
+                (k * 5).max(self.config.ef_search)
+            } else {
+                k
+            };
+            let mut scored: Vec<ScoredDocument> = candidates
+                .into_iter()
+                .take(take_n)
+                .map(|c| ScoredDocument {
+                    score: c.score,
+                    document: self.documents[c.node].clone(),
+                })
+                .collect();
 
-        if self.config.sq && self.config.sq_rescore {
-            // Rescore with exact f32 distance
-            let rescore_k = (k * 2).min(scored.len());
-            for r in &mut scored[..rescore_k] {
-                r.score = distance::score(&r.document.embedding, query, self.config.metric);
+            if self.config.sq_rescore {
+                let rescore_k = (k * 2).min(scored.len());
+                for r in &mut scored[..rescore_k] {
+                    r.score = distance::score(&r.document.embedding, query, self.config.metric);
+                }
+                scored[..rescore_k]
+                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            } else {
+                scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
             }
-            scored[..rescore_k]
-                .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            scored.truncate(k);
+            scored
         } else {
+            let top_layer = self.graphs.len().saturating_sub(1);
+            let mut ep = ep;
+            for layer in (1..=top_layer).rev() {
+                let r = self.search_layer(query, ep, 1, layer);
+                if let Some(best) = r.first() {
+                    ep = best.node;
+                }
+            }
+
+            let candidates = self.search_layer(query, ep, ef, 0);
+
+            let take_n = k;
+            let mut scored: Vec<ScoredDocument> = candidates
+                .into_iter()
+                .take(take_n)
+                .map(|c| ScoredDocument {
+                    score: c.score,
+                    document: self.documents[c.node].clone(),
+                })
+                .collect();
+
             scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            scored.truncate(k);
+            scored
         }
-        scored.truncate(k);
-        scored
     }
 
     // ------------------------------------------------------------------
@@ -353,15 +371,15 @@ impl HnswIndex {
 
         // SQ quantisation
         if self.config.sq {
-            if self.embedding_i8.is_empty() {
-                // First document: compute scale/bias from this doc
+            if self.scales.is_empty() {
+                // First document: compute per‑dim scale/bias from this doc
                 let fake_docs = [doc.clone()];
-                let (s, b) = crate::index::compute_scale_bias(&fake_docs);
-                self.scale = s;
-                self.bias = b;
+                let (sc, bi) = crate::index::compute_scale_bias_per_dim(&fake_docs);
+                self.scales = sc;
+                self.biases = bi;
             }
             self.embedding_i8
-                .push(crate::index::quantize(&emb, self.scale, self.bias));
+                .push(crate::index::quantize(&emb, &self.scales, &self.biases));
         }
 
         // Keep doc.embedding intact for persistence (JSONL needs it)
@@ -491,6 +509,79 @@ impl HnswIndex {
 
         // into_sorted_vec() on BinaryHeap<Reverse> gives ascending
         // by Reverse, which is descending by score. Best first.
+        results.into_sorted_vec().into_iter().map(|r| r.0).collect()
+    }
+
+    /// Single-layer search with **pre‑quantised** i8 query.
+    ///
+    /// Identical to [`search_layer`](Self::search_layer) but uses
+    /// `score_query_i8` for distances — avoids re‑quantising the query
+    /// on every neighbour visit.
+    fn search_layer_i8(
+        &self,
+        query_i8: &[i8],
+        entry: usize,
+        ef: usize,
+        layer: usize,
+    ) -> Vec<Candidate> {
+        let mut visited = vec![false; self.documents.len()];
+        visited[entry] = true;
+
+        let mut candidates = std::collections::BinaryHeap::new();
+        let entry_score = self.score_query_i8(query_i8, entry);
+        candidates.push(Candidate {
+            score: entry_score,
+            node: entry,
+        });
+
+        use std::cmp::Reverse;
+        let mut results: std::collections::BinaryHeap<Reverse<Candidate>> =
+            std::collections::BinaryHeap::new();
+        results.push(Reverse(Candidate {
+            score: entry_score,
+            node: entry,
+        }));
+
+        while let Some(current) = candidates.pop() {
+            let worst = match results.peek() {
+                Some(Reverse(w)) => w.score,
+                None => break,
+            };
+
+            if current.score < worst && results.len() >= ef {
+                break;
+            }
+
+            for &nei in &self.graphs[layer][current.node] {
+                if visited[nei] {
+                    continue;
+                }
+                visited[nei] = true;
+
+                let nei_score = self.score_query_i8(query_i8, nei);
+
+                candidates.push(Candidate {
+                    score: nei_score,
+                    node: nei,
+                });
+
+                if results.len() < ef {
+                    results.push(Reverse(Candidate {
+                        score: nei_score,
+                        node: nei,
+                    }));
+                } else if let Some(Reverse(worst)) = results.peek() {
+                    if nei_score > worst.score {
+                        results.pop();
+                        results.push(Reverse(Candidate {
+                            score: nei_score,
+                            node: nei,
+                        }));
+                    }
+                }
+            }
+        }
+
         results.into_sorted_vec().into_iter().map(|r| r.0).collect()
     }
 

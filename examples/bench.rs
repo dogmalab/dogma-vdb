@@ -11,15 +11,20 @@ use dogma_vdb::index::{AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, Hns
 use std::time::Instant;
 
 fn random_vec(dim: usize) -> Vec<f32> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Deterministic random via SplitMix64 (same algorithm as HNSW).
+    // Produces well-distributed values in [-3, 3].
     let seed = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut hasher = DefaultHasher::new();
-    seed.hash(&mut hasher);
-    let h = hasher.finish();
     (0..dim)
-        .map(|i| ((h.wrapping_add(i as u64 * 6364136223846793005) >> 16) as f64 * 0.0001) as f32)
+        .map(|i| {
+            let id = seed.wrapping_mul(dim as u64).wrapping_add(i as u64);
+            let mut z = id.wrapping_mul(0x9E3779B97F4A7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^= z >> 31;
+            (z >> 10) as f64 * 6.0 / 9007199254740992.0 - 3.0
+        })
+        .map(|x| x as f32)
         .collect()
 }
 
@@ -74,6 +79,17 @@ fn main() {
             100,
         );
 
+        // --- BruteForce + SQ + Rescore ---
+        let mut bf_sqr = BruteForceIndex::new_with(Metric::Cosine, true, true);
+        bf_sqr.insert(&docs);
+        bench(
+            "BF+SQ+Rescore",
+            |q, k| {
+                bf_sqr.search(q, k);
+            },
+            100,
+        );
+
         // --- HNSW ---
         let mut hnsw = HnswIndex::new(HnswConfig {
             m: 16,
@@ -110,6 +126,25 @@ fn main() {
             "HNSW+SQ (ef=50)",
             |q, k| {
                 hnsw_sq.search(q, k);
+            },
+            100,
+        );
+
+        // --- HNSW + SQ + Rescore ---
+        let mut hnsw_sqr = HnswIndex::new(HnswConfig {
+            m: 16,
+            ef_construction: 100,
+            ef_search: 50,
+            metric: Metric::Cosine,
+            flat_embeddings: false,
+            sq: true,
+            sq_rescore: true,
+        });
+        hnsw_sqr.insert(&docs);
+        bench(
+            "HNSW+SQ+Rescore",
+            |q, k| {
+                hnsw_sqr.search(q, k);
             },
             100,
         );
@@ -161,9 +196,11 @@ fn main() {
         for (label, results) in [
             ("HNSW", hnsw.search(&docs[0].embedding, k)),
             ("HNSW+SQ", hnsw_sq.search(&docs[0].embedding, k)),
+            ("HNSW+SQ+Rescore", hnsw_sqr.search(&docs[0].embedding, k)),
             ("HNSW+Flat", hnsw_f.search(&docs[0].embedding, k)),
             ("Annoy", annoy.search(&docs[0].embedding, k)),
             ("BF+SQ", bf_sq.search(&docs[0].embedding, k)),
+            ("BF+SQ+Rescore", bf_sqr.search(&docs[0].embedding, k)),
         ] {
             let set: std::collections::HashSet<&str> =
                 results.iter().map(|r| r.document.id.as_str()).collect();

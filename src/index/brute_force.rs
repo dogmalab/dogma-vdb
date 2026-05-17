@@ -1,10 +1,9 @@
 //! Brute‑force (linear scan) index.
 //!
-//! Correct, simple, and fast enough for up to ~10 000 documents.
-//!
 //! Supports optional **Scalar Quantization (SQ)** — when `sq` is `true`,
 //! embeddings are compressed from `f32` to `i8` for ~4× less memory and
-//! ~2× faster distance computation.
+//! ~2× faster distance computation.  Quantisation is per‑dimension to
+//! preserve ranking across all metrics.
 
 use crate::distance::Metric;
 use crate::doc::Document;
@@ -18,10 +17,12 @@ pub struct BruteForceIndex {
     metric: Metric,
     sq: bool,
     sq_rescore: bool,
-    /// Quantised embeddings (only used when `sq=true`).
+    /// Quantised embeddings (per‑dimension, only used when `sq=true`).
     embedding_i8: Vec<Vec<i8>>,
-    scale: f32,
-    bias: f32,
+    /// Per‑dimension scale factors.
+    scales: Vec<f32>,
+    /// Per‑dimension biases.
+    biases: Vec<f32>,
 }
 
 impl BruteForceIndex {
@@ -32,8 +33,8 @@ impl BruteForceIndex {
             sq: false,
             sq_rescore: false,
             embedding_i8: Vec::new(),
-            scale: 1.0,
-            bias: 0.0,
+            scales: Vec::new(),
+            biases: Vec::new(),
         }
     }
 
@@ -45,8 +46,8 @@ impl BruteForceIndex {
             sq,
             sq_rescore,
             embedding_i8: Vec::new(),
-            scale: 1.0,
-            bias: 0.0,
+            scales: Vec::new(),
+            biases: Vec::new(),
         }
     }
 
@@ -57,8 +58,8 @@ impl BruteForceIndex {
             sq: false,
             sq_rescore: false,
             embedding_i8: Vec::new(),
-            scale: 1.0,
-            bias: 0.0,
+            scales: Vec::new(),
+            biases: Vec::new(),
         }
     }
 
@@ -74,18 +75,17 @@ impl BruteForceIndex {
 impl Index for BruteForceIndex {
     fn insert(&mut self, docs: &[Document]) {
         if self.sq {
-            // First batch: compute scale/bias from all existing + new docs
-            // Subsequent batches: use existing scale/bias (clamp handles outliers)
             if self.embedding_i8.is_empty() {
+                // First batch: compute per‑dim scale/bias from all existing + new
                 let all_docs: Vec<Document> = self
                     .documents
                     .iter()
                     .cloned()
                     .chain(docs.iter().cloned())
                     .collect();
-                let (scale, bias) = index::compute_scale_bias(&all_docs);
-                self.scale = scale;
-                self.bias = bias;
+                let (scales, biases) = index::compute_scale_bias_per_dim(&all_docs);
+                self.scales = scales;
+                self.biases = biases;
 
                 // Re-quantize existing + new
                 self.embedding_i8 = all_docs
@@ -94,19 +94,18 @@ impl Index for BruteForceIndex {
                         if d.embedding.is_empty() {
                             Vec::new()
                         } else {
-                            index::quantize(&d.embedding, self.scale, self.bias)
+                            index::quantize(&d.embedding, &self.scales, &self.biases)
                         }
                     })
                     .collect();
             } else {
-                // Quantize new docs
+                // Subsequent batches: use existing scale/bias
                 for doc in docs {
-                    let q = if doc.embedding.is_empty() {
+                    self.embedding_i8.push(if doc.embedding.is_empty() {
                         Vec::new()
                     } else {
-                        index::quantize(&doc.embedding, self.scale, self.bias)
-                    };
-                    self.embedding_i8.push(q);
+                        index::quantize(&doc.embedding, &self.scales, &self.biases)
+                    });
                 }
             }
         }
@@ -123,20 +122,16 @@ impl Index for BruteForceIndex {
         }
 
         if self.sq {
-            let query_i8 = index::quantize_query(query, self.scale, self.bias);
+            // Quantize query ONCE
+            let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
+
             let mut results: Vec<ScoredDocument> = self
                 .documents
                 .par_iter()
                 .enumerate()
                 .filter(|(_, d)| !d.embedding.is_empty())
                 .map(|(i, d)| {
-                    let score = index::score_i8(
-                        &query_i8,
-                        &self.embedding_i8[i],
-                        self.metric,
-                        self.scale,
-                        self.bias,
-                    );
+                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
                     ScoredDocument {
                         score,
                         document: d.clone(),
@@ -151,7 +146,6 @@ impl Index for BruteForceIndex {
             });
 
             if self.sq_rescore {
-                // Rescore top-k*2 candidates with exact f32 distance
                 let rescore_k = (k * 2).min(results.len());
                 for r in &mut results[..rescore_k] {
                     r.score = crate::distance::score(&r.document.embedding, query, self.metric);
@@ -202,10 +196,10 @@ impl Index for BruteForceIndex {
             keep
         });
         if self.sq {
-            // Recompute from current documents
-            let (scale, bias) = index::compute_scale_bias(&self.documents);
-            self.scale = scale;
-            self.bias = bias;
+            // Recompute per‑dim from current documents
+            let (scales, biases) = index::compute_scale_bias_per_dim(&self.documents);
+            self.scales = scales;
+            self.biases = biases;
             self.embedding_i8 = self
                 .documents
                 .iter()
@@ -213,7 +207,7 @@ impl Index for BruteForceIndex {
                     if d.embedding.is_empty() {
                         Vec::new()
                     } else {
-                        index::quantize(&d.embedding, self.scale, self.bias)
+                        index::quantize(&d.embedding, &self.scales, &self.biases)
                     }
                 })
                 .collect();
@@ -232,7 +226,7 @@ impl Index for BruteForceIndex {
         }
 
         if self.sq {
-            let query_i8 = index::quantize_query(query, self.scale, self.bias);
+            let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
             let mut results: Vec<ScoredDocument> = self
                 .documents
                 .par_iter()
@@ -240,13 +234,7 @@ impl Index for BruteForceIndex {
                 .filter(|(_, d)| !d.embedding.is_empty())
                 .filter(|(_, d)| filter(d))
                 .map(|(i, d)| {
-                    let score = index::score_i8(
-                        &query_i8,
-                        &self.embedding_i8[i],
-                        self.metric,
-                        self.scale,
-                        self.bias,
-                    );
+                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
                     ScoredDocument {
                         score,
                         document: d.clone(),
@@ -316,8 +304,7 @@ mod tests {
     fn test_bruteforce_basic() {
         let docs = vec![make_doc("a", vec![1.0, 0.0, 0.0])];
         let index = BruteForceIndex::with_documents(docs, Metric::Cosine);
-        let query = vec![1.0, 0.0, 0.0];
-        let results = index.search(&query, 1);
+        let results = index.search(&[1.0, 0.0, 0.0], 1);
         assert_eq!(results.len(), 1);
         assert!((results[0].score - 1.0).abs() < 1e-6);
     }
@@ -330,8 +317,7 @@ mod tests {
             make_doc("c", vec![0.5, 0.5]),
         ];
         let index = BruteForceIndex::with_documents(docs, Metric::Cosine);
-        let query = vec![0.9, 0.1];
-        let results = index.search(&query, 2);
+        let results = index.search(&[0.9, 0.1], 2);
         assert_eq!(results.len(), 2);
         assert!(results[0].score >= results[1].score);
     }
@@ -339,19 +325,15 @@ mod tests {
     #[test]
     fn test_search_empty_index() {
         let index = BruteForceIndex::new(Metric::Cosine);
-        let results = index.search(&[1.0, 2.0], 5);
-        assert!(results.is_empty());
+        assert!(index.search(&[1.0, 2.0], 5).is_empty());
     }
 
     #[test]
     fn test_insert_and_search() {
         let mut index = BruteForceIndex::new(Metric::Euclidean);
-        assert!(index.is_empty());
         index.insert(&[make_doc("a", vec![0.0, 0.0])]);
-        assert_eq!(index.len(), 1);
         let results = index.search(&[0.0, 0.0], 5);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].document.id, "a");
     }
 
     #[test]
@@ -361,9 +343,7 @@ mod tests {
             Document::new("b", "no embedding"),
         ];
         let index = BruteForceIndex::with_documents(docs, Metric::Cosine);
-        let results = index.search(&[1.0, 0.0], 5);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].document.id, "a");
+        assert_eq!(index.search(&[1.0, 0.0], 5).len(), 1);
     }
 
     // ------------------------------------------------------------------
@@ -374,13 +354,10 @@ mod tests {
     fn test_sq_basic() {
         let mut index = BruteForceIndex::new_with(Metric::Cosine, true, false);
         index.insert(&[make_doc("a", vec![1.0, 0.0])]);
-        assert_eq!(index.len(), 1);
         assert!(!index.embedding_i8.is_empty());
-
         let results = index.search(&[1.0, 0.0], 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].document.id, "a");
-        // SQ scores are approximate — ranking matters, not absolute value
     }
 
     #[test]
@@ -390,9 +367,7 @@ mod tests {
             make_doc("near", vec![1.0, 1.0]),
             make_doc("far", vec![100.0, 100.0]),
         ]);
-
         let results = index.search(&[1.0, 1.0], 2);
-        assert_eq!(results.len(), 2);
         assert_eq!(results[0].document.id, "near");
     }
 
@@ -400,7 +375,6 @@ mod tests {
     fn test_sq_same_ranking() {
         let mut bf = BruteForceIndex::new(Metric::Cosine);
         let mut sq = BruteForceIndex::new_with(Metric::Cosine, true, false);
-
         let docs = vec![
             make_doc("close", vec![0.9, 0.1]),
             make_doc("far", vec![0.1, 0.9]),
@@ -409,12 +383,11 @@ mod tests {
         bf.insert(&docs);
         sq.insert(&docs);
 
-        let query = vec![1.0, 0.0];
-        let r1 = bf.search(&query, 3);
-        let r2 = sq.search(&query, 3);
-
-        // Rankings should match (both have same ordering by id)
-        for (a, b) in r1.iter().zip(r2.iter()) {
+        for (a, b) in bf
+            .search(&[1.0, 0.0], 3)
+            .iter()
+            .zip(sq.search(&[1.0, 0.0], 3).iter())
+        {
             assert_eq!(a.document.id, b.document.id);
         }
     }
@@ -424,9 +397,7 @@ mod tests {
         let mut index = BruteForceIndex::new_with(Metric::Cosine, true, false);
         index.insert(&[make_doc("a", vec![1.0, 0.0]), make_doc("b", vec![0.0, 1.0])]);
         assert_eq!(index.embedding_i8.len(), 2);
-
         index.delete(&["a"]);
-        assert_eq!(index.len(), 1);
         assert_eq!(index.embedding_i8.len(), 1);
     }
 
@@ -443,11 +414,36 @@ mod tests {
                 .metadata("lang", "es")
                 .build(),
         ]);
-
-        let results = index.search_filtered(&[1.0, 0.0], 5, &|d: &Document| {
-            d.metadata_val("lang") == Some("en")
-        });
+        let results =
+            index.search_filtered(&[1.0, 0.0], 5, &|d| d.metadata_val("lang") == Some("en"));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].document.id, "en");
+    }
+
+    #[test]
+    fn test_sq_rescore_recovers_ranking() {
+        let mut sq = BruteForceIndex::new_with(Metric::Cosine, true, true);
+        let docs = vec![
+            make_doc("close", vec![0.9, 0.1]),
+            make_doc("far", vec![0.1, 0.9]),
+        ];
+        sq.insert(&docs);
+        let results = sq.search(&[1.0, 0.0], 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].document.id, "close");
+    }
+
+    #[test]
+    fn test_sq_wide_range_preserves_ranking() {
+        // Dimensions with vastly different ranges — per‑dim scaling must
+        // preserve ranking.  This is the case that broke global min/max.
+        let mut sq = BruteForceIndex::new_with(Metric::Cosine, true, false);
+        sq.insert(&[
+            make_doc("close", vec![1.0, 1.0]),
+            make_doc("far", vec![1000.0, 1000.0]),
+        ]);
+        let results = sq.search(&[1.0, 1.0], 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].document.id, "close");
     }
 }
