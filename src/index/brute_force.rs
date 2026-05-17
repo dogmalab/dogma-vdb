@@ -5,6 +5,7 @@
 use crate::distance::Metric;
 use crate::doc::Document;
 use crate::index::{Index, ScoredDocument};
+use rayon::prelude::*;
 
 /// Brute‑force (linear scan) index.
 ///
@@ -55,7 +56,7 @@ impl Index for BruteForceIndex {
 
         let mut results: Vec<ScoredDocument> = self
             .documents
-            .iter()
+            .par_iter()
             .filter(|d| !d.embedding.is_empty())
             .map(|d| {
                 let score = crate::distance::score(&d.embedding, query, self.metric);
@@ -86,7 +87,7 @@ impl Index for BruteForceIndex {
         &self,
         query: &[f32],
         k: usize,
-        filter: &dyn Fn(&Document) -> bool,
+        filter: &(dyn Fn(&Document) -> bool + Sync),
     ) -> Vec<ScoredDocument> {
         if self.documents.is_empty() || k == 0 {
             return Vec::new();
@@ -94,7 +95,7 @@ impl Index for BruteForceIndex {
 
         let mut results: Vec<ScoredDocument> = self
             .documents
-            .iter()
+            .par_iter()
             .filter(|d| !d.embedding.is_empty())
             .filter(|d| filter(d))
             .map(|d| {

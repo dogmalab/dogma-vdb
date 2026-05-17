@@ -205,7 +205,7 @@ impl Collection {
         &self,
         query: &[f32],
         k: usize,
-        filter: &dyn Fn(&Document) -> bool,
+        filter: &(dyn Fn(&Document) -> bool + Sync),
     ) -> Vec<ScoredDocument> {
         self.index.search_filtered(query, k, filter)
     }

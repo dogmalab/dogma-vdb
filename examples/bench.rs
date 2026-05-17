@@ -18,7 +18,9 @@ fn random_vec(dim: usize) -> Vec<f32> {
     let mut hasher = DefaultHasher::new();
     seed.hash(&mut hasher);
     let h = hasher.finish();
-    (0..dim).map(|i| ((h.wrapping_add(i as u64 * 6364136223846793005) >> 16) as f64 * 0.0001) as f32).collect()
+    (0..dim)
+        .map(|i| ((h.wrapping_add(i as u64 * 6364136223846793005) >> 16) as f64 * 0.0001) as f32)
+        .collect()
 }
 
 fn make_docs(n: usize, dim: usize) -> Vec<Document> {
@@ -53,7 +55,13 @@ fn main() {
         // --- BruteForce ---
         let mut bf = BruteForceIndex::new(Metric::Cosine);
         bf.insert(&docs);
-        bench("BruteForce", |q, k| { bf.search(q, k); }, 100);
+        bench(
+            "BruteForce",
+            |q, k| {
+                bf.search(q, k);
+            },
+            100,
+        );
 
         // --- HNSW ---
         let mut hnsw = HnswIndex::new(HnswConfig {
@@ -65,7 +73,13 @@ fn main() {
         let start = Instant::now();
         hnsw.insert(&docs);
         let idx_time = start.elapsed();
-        bench("HNSW (ef=50)", |q, k| { hnsw.search(q, k); }, 100);
+        bench(
+            "HNSW (ef=50)",
+            |q, k| {
+                hnsw.search(q, k);
+            },
+            100,
+        );
 
         // HNSW with higher ef
         let mut hnsw2 = HnswIndex::new(HnswConfig {
@@ -75,15 +89,25 @@ fn main() {
             metric: Metric::Cosine,
         });
         hnsw2.insert(&docs);
-        bench("HNSW (ef=200)", |q, k| { hnsw2.search(q, k); }, 100);
+        bench(
+            "HNSW (ef=200)",
+            |q, k| {
+                hnsw2.search(q, k);
+            },
+            100,
+        );
 
         println!("  Build time: HNSW={idx_time:.3?}");
 
         // --- Recall (approximate) ---
         let bf_results = bf.search(&docs[0].embedding, k);
-        let bf_result: std::collections::HashSet<&str> = bf_results.iter().map(|r| r.document.id.as_str()).collect();
+        let bf_result: std::collections::HashSet<&str> =
+            bf_results.iter().map(|r| r.document.id.as_str()).collect();
         let hnsw_results = hnsw.search(&docs[0].embedding, k);
-        let hnsw_result: std::collections::HashSet<&str> = hnsw_results.iter().map(|r| r.document.id.as_str()).collect();
+        let hnsw_result: std::collections::HashSet<&str> = hnsw_results
+            .iter()
+            .map(|r| r.document.id.as_str())
+            .collect();
         let overlap = bf_result.intersection(&hnsw_result).count();
         let recall = overlap as f64 / k as f64 * 100.0;
         println!("  Recall (HNSW ef=50):  {recall:.0}%");

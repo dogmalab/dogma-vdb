@@ -378,11 +378,7 @@ impl HnswIndex {
 
         // into_sorted_vec() on BinaryHeap<Reverse> gives ascending
         // by Reverse, which is descending by score. Best first.
-        results
-            .into_sorted_vec()
-            .into_iter()
-            .map(|r| r.0)
-            .collect()
+        results.into_sorted_vec().into_iter().map(|r| r.0).collect()
     }
 
     /// Shrink connections at a node, keeping only the closest `m_max`.
@@ -441,7 +437,7 @@ impl Index for HnswIndex {
         &self,
         query: &[f32],
         k: usize,
-        filter: &dyn Fn(&Document) -> bool,
+        filter: &(dyn Fn(&Document) -> bool + Sync),
     ) -> Vec<ScoredDocument> {
         // Higher multiplier because HNSW is approximate and we post-filter
         let multiplier = (k * 5).max(self.config.ef_search * 2);

@@ -48,7 +48,7 @@ pub trait Index: Send + Sync {
         &self,
         query: &[f32],
         k: usize,
-        filter: &dyn Fn(&Document) -> bool,
+        filter: &(dyn Fn(&Document) -> bool + Sync),
     ) -> Vec<ScoredDocument> {
         // Default: post-filter (safe approximation)
         self.search(query, k * 3)
