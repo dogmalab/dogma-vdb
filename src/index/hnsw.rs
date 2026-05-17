@@ -17,6 +17,7 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::index::{Index, ScoredDocument};
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
@@ -387,18 +388,61 @@ impl HnswIndex {
             return;
         }
 
-        let mut scored: Vec<(usize, f32)> = self.graphs[layer][node]
-            .iter()
+        // Phase 1: score all candidates in parallel
+        let mut candidates: Vec<(usize, f32)> = self.graphs[layer][node]
+            .par_iter()
             .map(|&n| {
                 let s = distance::score(centre, &self.documents[n].embedding, self.config.metric);
                 (n, s)
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-        scored.truncate(m_max);
+        // Sort by score descending (closest first)
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
-        self.graphs[layer][node] = scored.into_iter().map(|(n, _)| n).collect();
+        // Phase 2: heuristic selection — prefer diverse connections
+        let mut results = Vec::with_capacity(m_max);
+        let mut discard: Vec<usize> = Vec::with_capacity(candidates.len());
+
+        for &(cand_id, cand_score) in &candidates {
+            if results.len() >= m_max {
+                discard.push(cand_id);
+                continue;
+            }
+
+            // A candidate is diverse if it's closer to the centre than to
+            // any already-selected result — i.e. it covers a different
+            // region of the space.
+            let is_diverse = results.iter().all(|&(r_id, _r_score)| {
+                let r_id: usize = r_id;
+                let d_cand_r = distance::score(
+                    &self.documents[cand_id].embedding,
+                    &self.documents[r_id].embedding,
+                    self.config.metric,
+                );
+                cand_score >= d_cand_r
+            });
+
+            if is_diverse {
+                results.push((cand_id, cand_score));
+            } else {
+                discard.push(cand_id);
+            }
+        }
+
+        // Fill remaining slots from discard (closest first)
+        if results.len() < m_max && !discard.is_empty() {
+            discard.sort_by(|a, b| {
+                let sa = distance::score(centre, &self.documents[*a].embedding, self.config.metric);
+                let sb = distance::score(centre, &self.documents[*b].embedding, self.config.metric);
+                sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
+            });
+            for &d in discard.iter().take(m_max - results.len()) {
+                results.push((d, 0.0));
+            }
+        }
+
+        self.graphs[layer][node] = results.into_iter().map(|(n, _)| n).collect();
     }
 }
 
