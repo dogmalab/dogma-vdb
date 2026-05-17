@@ -41,6 +41,9 @@ pub struct HnswConfig {
     /// `i8` for ~4× less memory and ~2× faster distance computation
     /// (default: `false`).
     pub sq: bool,
+    /// When `sq=true` and this is `true`, run exact f32 rescoring on
+    /// top candidates to recover recall (default: `false`).
+    pub sq_rescore: bool,
 }
 
 impl Default for HnswConfig {
@@ -52,6 +55,7 @@ impl Default for HnswConfig {
             metric: Metric::Cosine,
             flat_embeddings: false,
             sq: false,
+            sq_rescore: false,
         }
     }
 }
@@ -110,6 +114,7 @@ impl Ord for Candidate {
 ///     metric: Metric::Cosine,
 ///     flat_embeddings: false,
 ///     sq: false,
+///     sq_rescore: false,
 /// });
 ///
 /// let doc = Document::builder("a", "hello")
@@ -272,17 +277,33 @@ impl HnswIndex {
         // 2. Full search at layer 0
         let candidates = self.search_layer(query, ep, ef, 0);
 
-        // 3. Take top-k and wrap into ScoredDocument
+        // 3. Take top-k* (more if rescoring) and wrap into ScoredDocument
+        let take_n = if self.config.sq && self.config.sq_rescore {
+            (k * 5).max(self.config.ef_search)
+        } else {
+            k
+        };
         let mut scored: Vec<ScoredDocument> = candidates
             .into_iter()
-            .take(k)
+            .take(take_n)
             .map(|c| ScoredDocument {
                 score: c.score,
                 document: self.documents[c.node].clone(),
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        if self.config.sq && self.config.sq_rescore {
+            // Rescore with exact f32 distance
+            let rescore_k = (k * 2).min(scored.len());
+            for r in &mut scored[..rescore_k] {
+                r.score = distance::score(&r.document.embedding, query, self.config.metric);
+            }
+            scored[..rescore_k]
+                .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        } else {
+            scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        }
+        scored.truncate(k);
         scored
     }
 
@@ -613,6 +634,7 @@ mod tests {
             metric: Metric::Cosine,
             flat_embeddings: false,
             sq: false,
+            sq_rescore: false,
         }
     }
 
@@ -624,6 +646,7 @@ mod tests {
             metric: Metric::Cosine,
             flat_embeddings: true,
             sq: false,
+            sq_rescore: false,
         }
     }
 
@@ -724,6 +747,7 @@ mod tests {
             metric: Metric::Cosine,
             flat_embeddings: false,
             sq: false,
+            sq_rescore: false,
         });
 
         let mut docs = Vec::with_capacity(500);
@@ -778,6 +802,7 @@ mod tests {
             metric: Metric::Euclidean,
             flat_embeddings: true,
             sq: false,
+            sq_rescore: false,
         });
         let docs: Vec<Document> = (0..10)
             .map(|i| make_doc(&format!("d{}", i), vec![i as f32, 0.0, 0.0]))

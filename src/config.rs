@@ -93,6 +93,10 @@ pub struct CollectionConfig {
     // Scalar Quantization (orthogonal — applies to any backend)
     #[serde(default)]
     pub sq: bool,
+    /// When `sq=true` and this is `true`, run exact f32 rescoring on
+    /// the top `k*2` quantized results to recover recall (default: `false`).
+    #[serde(default)]
+    pub sq_rescore: bool,
 }
 impl CollectionConfig {
     fn default_path() -> PathBuf {
@@ -244,6 +248,27 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
             "MCP_ENABLED" => cfg.mcp.enabled = val == "true",
             "MCP_PORT" => cfg.mcp.port = val.parse().unwrap_or(cfg.mcp.port),
             "LOG_LEVEL" => cfg.logging.level = val,
+            "COLLECTION_INDEX_TYPE" => cfg.collection.index_type = val,
+            "COLLECTION_METRIC" => cfg.collection.index_metric = val,
+            "COLLECTION_HNSW_M" => {
+                cfg.collection.hnsw_m = val.parse().unwrap_or(cfg.collection.hnsw_m)
+            }
+            "COLLECTION_HNSW_EF_CONSTRUCTION" => {
+                cfg.collection.hnsw_ef_construction =
+                    val.parse().unwrap_or(cfg.collection.hnsw_ef_construction)
+            }
+            "COLLECTION_HNSW_EF_SEARCH" => {
+                cfg.collection.hnsw_ef_search = val.parse().unwrap_or(cfg.collection.hnsw_ef_search)
+            }
+            "COLLECTION_HNSW_FLAT" => cfg.collection.hnsw_flat_embeddings = val == "true",
+            "COLLECTION_ANNOY_N_TREES" => {
+                cfg.collection.annoy_n_trees = val.parse().unwrap_or(cfg.collection.annoy_n_trees)
+            }
+            "COLLECTION_ANNOY_SEARCH_K" => {
+                cfg.collection.annoy_search_k = val.parse().unwrap_or(cfg.collection.annoy_search_k)
+            }
+            "COLLECTION_SQ" => cfg.collection.sq = val == "true",
+            "COLLECTION_SQ_RESCORE" => cfg.collection.sq_rescore = val == "true",
             _ => {}
         }
     }
@@ -271,6 +296,7 @@ impl Default for Config {
                 annoy_n_trees: 10,
                 annoy_search_k: -1,
                 sq: false,
+                sq_rescore: false,
             },
             watch: WatchConfig {
                 enabled: false,

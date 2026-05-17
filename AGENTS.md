@@ -11,24 +11,27 @@ Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas clara
 
 ---
 
-## ✅ ESTADO ACTUAL (2026-05-16)
+## ✅ ESTADO ACTUAL (2026-05-17)
 
-### Core crate (`dogma-vdb`) — COMPILA y 117 TESTS PASAN
+### Core crate (`dogma-vdb`) — COMPILA y 152 TESTS PASAN
 
 | Modulo | Archivo | Lines | Tests | Estado |
 |--------|---------|-------|-------|--------|
 | Document | `src/doc.rs` | 205 | 8 | Completo |
 | Error | `src/error.rs` | 45 | - | Completo |
 | Distance | `src/distance.rs` | 209 | 16 | Completo |
+| Filter | `src/filter.rs` | 122 | 9 | Completo |
 | Storage (JSONL) | `src/storage.rs` | 307 | 15 | Completo |
-| Index (BruteForce) | `src/index/brute_force.rs` | 210 | 14 | Completo |
-| Index (HNSW-ANN) | `src/index/hnsw.rs` | ~560 | 12+ | Completo |
-| Index trait | `src/index/mod.rs` | 47 | - | Completo |
-| Collection API | `src/collection.rs` | ~400 | 15 | Completo |
+| Collection | `src/collection.rs` | ~530 | 15 | Completo |
+| Runtime Config | `src/config.rs` | ~320 | - | Completo |
 | Chunker | `src/chunker.rs` | 247 | 8 | Completo |
 | Embedder trait | `src/embedding.rs` | 28 | - | Completo |
 | SmartChunker | `src/smart_chunker/` | ~560 | 20+ | Completo |
-| Runtime Config | `src/config.rs` | 222 | - | Funcional |
+| Index trait | `src/index/mod.rs` | 67 | - | Completo |
+| Index (BruteForce) | `src/index/brute_force.rs` | 440 | 18 | Completo |
+| Index (HNSW) | `src/index/hnsw.rs` | ~840 | 21 | Completo |
+| Index (Annoy) | `src/index/annoy.rs` | ~530 | 10 | Completo |
+| SQ module | `src/index/sq.rs` | ~230 | 8 | Completo |
 | Watcher | `src/watch.rs` | 56 | - | **SKELETON** (`todo!()`) |
 | MCP Server | `src/mcp.rs` | 36 | - | **SKELETON** (`todo!()`) |
 
@@ -42,10 +45,10 @@ Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas clara
 | `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | **SKELETON** — `todo!()` en metodos |
 
 ### Tests
-- Unitarios: 103 pasan
+- Unitarios: 135 pasan
 - Integracion: 9 pasan
-- Doc-tests: 5 pasan, 2 ignorados
-- **Total: 117 tests, 0 fallos**
+- Doc-tests: 8 pasan, 2 ignorados
+- **Total: 152 tests, 0 fallos**
 
 ---
 
@@ -290,7 +293,12 @@ Si cumple todo, el codigo puede mergearse.
 - [x] CRUD completo (insert, delete, update)
 - [x] CLI (info, list, query, ingest, delete)
 - [x] MCP server (vecdb_query, ingest, delete, list, info)
-- [ ] Benchmarks comparativos (BruteForce vs HNSW)
+- [x] Benchmarks comparativos (todos los backends)
+- [x] HNSW flat_embeddings
+- [x] SQ module + integracion en BF y HNSW
+- [x] SQ rescore (recuperar recall con f32)
+- [x] Annoy index (random projection forest)
+- [x] Config env vars para todos los campos
 - [ ] Implementar `watch.rs` (file system watcher, feature = "watch")
 - [ ] Implementar `mcp.rs` (MCP server, feature = "mcp")
 - [ ] Implementar FastEmbed real (`dogma-vdb-embed-fastembed`)

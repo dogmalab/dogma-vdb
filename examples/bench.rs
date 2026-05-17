@@ -64,7 +64,7 @@ fn main() {
         );
 
         // --- BruteForce + SQ ---
-        let mut bf_sq = BruteForceIndex::new_with(Metric::Cosine, true);
+        let mut bf_sq = BruteForceIndex::new_with(Metric::Cosine, true, false);
         bf_sq.insert(&docs);
         bench(
             "BF+SQ",
@@ -82,6 +82,7 @@ fn main() {
             metric: Metric::Cosine,
             flat_embeddings: false,
             sq: false,
+            sq_rescore: false,
         });
         let start = Instant::now();
         hnsw.insert(&docs);
@@ -102,6 +103,7 @@ fn main() {
             metric: Metric::Cosine,
             flat_embeddings: false,
             sq: true,
+            sq_rescore: false,
         });
         hnsw_sq.insert(&docs);
         bench(
@@ -120,6 +122,7 @@ fn main() {
             metric: Metric::Cosine,
             flat_embeddings: true,
             sq: false,
+            sq_rescore: false,
         });
         hnsw_f.insert(&docs);
         bench(

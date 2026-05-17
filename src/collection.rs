@@ -52,6 +52,7 @@ impl Collection {
                 metric,
                 flat_embeddings: cfg.hnsw_flat_embeddings,
                 sq: cfg.sq,
+                sq_rescore: cfg.sq_rescore,
             })),
             "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
                 n_trees: cfg.annoy_n_trees,
@@ -59,7 +60,7 @@ impl Collection {
                 metric,
                 leaf_size: 10,
             })),
-            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq)),
+            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };
 
         Self::build(path, index)
@@ -86,6 +87,7 @@ impl Collection {
                 metric,
                 flat_embeddings: cfg.hnsw_flat_embeddings,
                 sq: cfg.sq,
+                sq_rescore: cfg.sq_rescore,
             })),
             "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
                 n_trees: cfg.annoy_n_trees,
@@ -93,7 +95,7 @@ impl Collection {
                 metric,
                 leaf_size: 10,
             })),
-            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq)),
+            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };
 
         Self::build(path, index)

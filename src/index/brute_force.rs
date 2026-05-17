@@ -17,6 +17,7 @@ pub struct BruteForceIndex {
     documents: Vec<Document>,
     metric: Metric,
     sq: bool,
+    sq_rescore: bool,
     /// Quantised embeddings (only used when `sq=true`).
     embedding_i8: Vec<Vec<i8>>,
     scale: f32,
@@ -29,18 +30,20 @@ impl BruteForceIndex {
             documents: Vec::new(),
             metric,
             sq: false,
+            sq_rescore: false,
             embedding_i8: Vec::new(),
             scale: 1.0,
             bias: 0.0,
         }
     }
 
-    /// Create with an explicit SQ flag.
-    pub fn new_with(metric: Metric, sq: bool) -> Self {
+    /// Create with explicit SQ and rescore flags.
+    pub fn new_with(metric: Metric, sq: bool, sq_rescore: bool) -> Self {
         Self {
             documents: Vec::new(),
             metric,
             sq,
+            sq_rescore,
             embedding_i8: Vec::new(),
             scale: 1.0,
             bias: 0.0,
@@ -52,6 +55,7 @@ impl BruteForceIndex {
             documents: docs,
             metric,
             sq: false,
+            sq_rescore: false,
             embedding_i8: Vec::new(),
             scale: 1.0,
             bias: 0.0,
@@ -145,6 +149,20 @@ impl Index for BruteForceIndex {
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+
+            if self.sq_rescore {
+                // Rescore top-k*2 candidates with exact f32 distance
+                let rescore_k = (k * 2).min(results.len());
+                for r in &mut results[..rescore_k] {
+                    r.score = crate::distance::score(&r.document.embedding, query, self.metric);
+                }
+                results[..rescore_k].sort_unstable_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+
             results.truncate(k);
             results
         } else {
@@ -241,6 +259,19 @@ impl Index for BruteForceIndex {
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+
+            if self.sq_rescore {
+                let rescore_k = (k * 2).min(results.len());
+                for r in &mut results[..rescore_k] {
+                    r.score = crate::distance::score(&r.document.embedding, query, self.metric);
+                }
+                results[..rescore_k].sort_unstable_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+
             results.truncate(k);
             results
         } else {
@@ -341,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_sq_basic() {
-        let mut index = BruteForceIndex::new_with(Metric::Cosine, true);
+        let mut index = BruteForceIndex::new_with(Metric::Cosine, true, false);
         index.insert(&[make_doc("a", vec![1.0, 0.0])]);
         assert_eq!(index.len(), 1);
         assert!(!index.embedding_i8.is_empty());
@@ -354,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_sq_multi_docs() {
-        let mut index = BruteForceIndex::new_with(Metric::Euclidean, true);
+        let mut index = BruteForceIndex::new_with(Metric::Euclidean, true, false);
         index.insert(&[
             make_doc("near", vec![1.0, 1.0]),
             make_doc("far", vec![100.0, 100.0]),
@@ -368,7 +399,7 @@ mod tests {
     #[test]
     fn test_sq_same_ranking() {
         let mut bf = BruteForceIndex::new(Metric::Cosine);
-        let mut sq = BruteForceIndex::new_with(Metric::Cosine, true);
+        let mut sq = BruteForceIndex::new_with(Metric::Cosine, true, false);
 
         let docs = vec![
             make_doc("close", vec![0.9, 0.1]),
@@ -390,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_sq_delete() {
-        let mut index = BruteForceIndex::new_with(Metric::Cosine, true);
+        let mut index = BruteForceIndex::new_with(Metric::Cosine, true, false);
         index.insert(&[make_doc("a", vec![1.0, 0.0]), make_doc("b", vec![0.0, 1.0])]);
         assert_eq!(index.embedding_i8.len(), 2);
 
@@ -401,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_sq_filtered() {
-        let mut index = BruteForceIndex::new_with(Metric::Cosine, true);
+        let mut index = BruteForceIndex::new_with(Metric::Cosine, true, false);
         index.insert(&[
             Document::builder("en", "hello")
                 .embedding(vec![1.0, 0.0])
