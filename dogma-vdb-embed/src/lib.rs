@@ -13,7 +13,10 @@ pub trait Embedder: Send + Sync {
     fn dimension(&self) -> usize;
 
     /// Embed several texts at once.
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }
 }

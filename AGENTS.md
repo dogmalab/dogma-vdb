@@ -42,7 +42,7 @@ Cada linea de codigo debe justificar su existencia. Preferimos **50 lineas clara
 | `dogma-vdb-cli` | `cli/src/main.rs` | Completo (info, list, query, ingest, delete) |
 | `dogma-vdb-mcp` | `mcp/src/main.rs` | Completo (vecdb_query, ingest, delete, list, info) |
 | `dogma-vdb-embed` | `embed/src/lib.rs` | Completo (trait definition) |
-| `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | **SKELETON** — `todo!()` en metodos |
+| `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | Completo (FastEmbedder con ONNX MiniLM-L6-v2) |
 
 ### Tests
 - Unitarios: 135 pasan
@@ -301,7 +301,8 @@ Si cumple todo, el codigo puede mergearse.
 - [x] Config env vars para todos los campos
 - [ ] Implementar `watch.rs` (file system watcher, feature = "watch")
 - [ ] Implementar `mcp.rs` (MCP server, feature = "mcp")
-- [ ] Implementar FastEmbed real (`dogma-vdb-embed-fastembed`)
+- [x] Implementar FastEmbed real (`dogma-vdb-embed-fastembed`)
+- [x] Workspace multi-crate (root Cargo.toml)
 - [ ] Ejemplos completos en `examples/`
 
 ---

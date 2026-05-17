@@ -79,7 +79,7 @@ sq_rescore = false
 | `dogma-vdb` | Core library (storage, index, collection, chunking) |
 | `dogma-vdb-cli` | CLI tool (info, list, query, ingest, delete) |
 | `dogma-vdb-embed` | Embedder trait definition |
-| `dogma-vdb-embed-fastembed` | Fastembed (ONNX) integration (skeleton) |
+| `dogma-vdb-embed-fastembed` | Fastembed (ONNX) integration (384-dim MiniLM-L6-v2) |
 | `dogma-vdb-mcp` | MCP server over stdio |
 
 ## Build & Test
