@@ -53,6 +53,8 @@ pub mod prelude {
     pub use crate::doc::{Document, DocumentBuilder};
     pub use crate::embedding::Embedder;
     pub use crate::error::{Error, Result};
-    pub use crate::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument};
+    pub use crate::index::{
+        AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument,
+    };
     pub use crate::storage::JsonlStorage;
 }

@@ -11,7 +11,9 @@ use crate::config::CONFIG;
 use crate::distance::Metric;
 use crate::doc::Document;
 use crate::error::Result;
-use crate::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument};
+use crate::index::{
+    AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index, ScoredDocument,
+};
 use crate::storage::JsonlStorage;
 use std::fmt;
 use std::path::PathBuf;
@@ -48,8 +50,16 @@ impl Collection {
                 ef_construction: cfg.hnsw_ef_construction,
                 ef_search: cfg.hnsw_ef_search,
                 metric,
+                flat_embeddings: cfg.hnsw_flat_embeddings,
+                sq: cfg.sq,
             })),
-            _ => Box::new(BruteForceIndex::new(metric)),
+            "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
+                n_trees: cfg.annoy_n_trees,
+                search_k: cfg.annoy_search_k,
+                metric,
+                leaf_size: 10,
+            })),
+            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq)),
         };
 
         Self::build(path, index)
@@ -74,8 +84,16 @@ impl Collection {
                 ef_construction: cfg.hnsw_ef_construction,
                 ef_search: cfg.hnsw_ef_search,
                 metric,
+                flat_embeddings: cfg.hnsw_flat_embeddings,
+                sq: cfg.sq,
             })),
-            _ => Box::new(BruteForceIndex::new(metric)),
+            "annoy" => Box::new(AnnoyIndex::new(AnnoyConfig {
+                n_trees: cfg.annoy_n_trees,
+                search_k: cfg.annoy_search_k,
+                metric,
+                leaf_size: 10,
+            })),
+            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq)),
         };
 
         Self::build(path, index)

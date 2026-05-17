@@ -1,18 +1,18 @@
-//! Quick benchmark: BruteForce vs HNSW speed & recall.
+//! Quick benchmark: all index backends, speed & recall.
 //!
 //! Run: cargo run --release --example bench
 //!
-//! Generates random 128-dim vectors and measures query latency.
+//! Generates random 128-dim vectors and measures query latency for
+//! BruteForce, HNSW, Annoy, and SQ variants.
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
-use dogma_vdb::index::{BruteForceIndex, HnswConfig, HnswIndex, Index};
+use dogma_vdb::index::{AnnoyConfig, AnnoyIndex, BruteForceIndex, HnswConfig, HnswIndex, Index};
 use std::time::Instant;
 
 fn random_vec(dim: usize) -> Vec<f32> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    // Deterministic random
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seed = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut hasher = DefaultHasher::new();
@@ -40,8 +40,8 @@ fn bench<F: Fn(&[f32], usize)>(label: &str, f: F, queries: usize) {
         f(&query, 10);
     }
     let elapsed = start.elapsed();
-    let per_query = elapsed.as_secs_f64() / queries as f64 * 1_000_000.0; // microseconds
-    println!("  {label:<20}  {elapsed:.3?} total  {per_query:.0} us/query");
+    let per_query = elapsed.as_secs_f64() / queries as f64 * 1_000_000.0;
+    println!("  {label:<22}  {elapsed:.3?} total  {per_query:.0} us/query");
 }
 
 fn main() {
@@ -63,12 +63,25 @@ fn main() {
             100,
         );
 
+        // --- BruteForce + SQ ---
+        let mut bf_sq = BruteForceIndex::new_with(Metric::Cosine, true);
+        bf_sq.insert(&docs);
+        bench(
+            "BF+SQ",
+            |q, k| {
+                bf_sq.search(q, k);
+            },
+            100,
+        );
+
         // --- HNSW ---
         let mut hnsw = HnswIndex::new(HnswConfig {
             m: 16,
             ef_construction: 100,
             ef_search: 50,
             metric: Metric::Cosine,
+            flat_embeddings: false,
+            sq: false,
         });
         let start = Instant::now();
         hnsw.insert(&docs);
@@ -81,35 +94,79 @@ fn main() {
             100,
         );
 
-        // HNSW with higher ef
-        let mut hnsw2 = HnswIndex::new(HnswConfig {
+        // --- HNSW + SQ ---
+        let mut hnsw_sq = HnswIndex::new(HnswConfig {
             m: 16,
-            ef_construction: 200,
-            ef_search: 200,
+            ef_construction: 100,
+            ef_search: 50,
             metric: Metric::Cosine,
+            flat_embeddings: false,
+            sq: true,
         });
-        hnsw2.insert(&docs);
+        hnsw_sq.insert(&docs);
         bench(
-            "HNSW (ef=200)",
+            "HNSW+SQ (ef=50)",
             |q, k| {
-                hnsw2.search(q, k);
+                hnsw_sq.search(q, k);
             },
             100,
         );
 
-        println!("  Build time: HNSW={idx_time:.3?}");
+        // --- HNSW + Flat ---
+        let mut hnsw_f = HnswIndex::new(HnswConfig {
+            m: 16,
+            ef_construction: 100,
+            ef_search: 50,
+            metric: Metric::Cosine,
+            flat_embeddings: true,
+            sq: false,
+        });
+        hnsw_f.insert(&docs);
+        bench(
+            "HNSW+Flat (ef=50)",
+            |q, k| {
+                hnsw_f.search(q, k);
+            },
+            100,
+        );
+
+        // --- Annoy ---
+        let mut annoy = AnnoyIndex::new(AnnoyConfig {
+            n_trees: 10,
+            search_k: -1,
+            metric: Metric::Cosine,
+            leaf_size: 10,
+        });
+        let start_a = Instant::now();
+        annoy.insert(&docs);
+        let annoy_build = start_a.elapsed();
+        bench(
+            "Annoy (10 trees)",
+            |q, k| {
+                annoy.search(q, k);
+            },
+            100,
+        );
+
+        println!("  Build time: HNSW={idx_time:.3?}  Annoy={annoy_build:.3?}");
 
         // --- Recall (approximate) ---
         let bf_results = bf.search(&docs[0].embedding, k);
-        let bf_result: std::collections::HashSet<&str> =
+        let bf_set: std::collections::HashSet<&str> =
             bf_results.iter().map(|r| r.document.id.as_str()).collect();
-        let hnsw_results = hnsw.search(&docs[0].embedding, k);
-        let hnsw_result: std::collections::HashSet<&str> = hnsw_results
-            .iter()
-            .map(|r| r.document.id.as_str())
-            .collect();
-        let overlap = bf_result.intersection(&hnsw_result).count();
-        let recall = overlap as f64 / k as f64 * 100.0;
-        println!("  Recall (HNSW ef=50):  {recall:.0}%");
+
+        for (label, results) in [
+            ("HNSW", hnsw.search(&docs[0].embedding, k)),
+            ("HNSW+SQ", hnsw_sq.search(&docs[0].embedding, k)),
+            ("HNSW+Flat", hnsw_f.search(&docs[0].embedding, k)),
+            ("Annoy", annoy.search(&docs[0].embedding, k)),
+            ("BF+SQ", bf_sq.search(&docs[0].embedding, k)),
+        ] {
+            let set: std::collections::HashSet<&str> =
+                results.iter().map(|r| r.document.id.as_str()).collect();
+            let overlap = bf_set.intersection(&set).count();
+            let recall = overlap as f64 / k as f64 * 100.0;
+            println!("  Recall {label:<12}  {recall:.0}%");
+        }
     }
 }

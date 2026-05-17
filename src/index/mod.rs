@@ -4,11 +4,15 @@
 //! - [`BruteForceIndex`] — precise, O(n·d) linear scan
 //! - [`HnswIndex`] — approximate, O(log n) via hierarchical graph
 
+mod annoy;
 mod brute_force;
 mod hnsw;
+mod sq;
 
+pub use annoy::{AnnoyConfig, AnnoyIndex};
 pub use brute_force::BruteForceIndex;
 pub use hnsw::{HnswConfig, HnswIndex};
+pub use sq::*;
 
 use crate::doc::Document;
 

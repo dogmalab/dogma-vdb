@@ -83,6 +83,16 @@ pub struct CollectionConfig {
     pub hnsw_ef_construction: usize,
     #[serde(default = "CollectionConfig::default_hnsw_ef_search")]
     pub hnsw_ef_search: usize,
+    #[serde(default)]
+    pub hnsw_flat_embeddings: bool,
+    // Annoy-specific (only used when index_type == "annoy")
+    #[serde(default = "CollectionConfig::default_annoy_n_trees")]
+    pub annoy_n_trees: usize,
+    #[serde(default = "CollectionConfig::default_annoy_search_k")]
+    pub annoy_search_k: i32,
+    // Scalar Quantization (orthogonal — applies to any backend)
+    #[serde(default)]
+    pub sq: bool,
 }
 impl CollectionConfig {
     fn default_path() -> PathBuf {
@@ -102,6 +112,12 @@ impl CollectionConfig {
     }
     fn default_hnsw_ef_search() -> usize {
         50
+    }
+    fn default_annoy_n_trees() -> usize {
+        10
+    }
+    fn default_annoy_search_k() -> i32 {
+        -1
     }
 }
 
@@ -251,6 +267,10 @@ impl Default for Config {
                 hnsw_m: 16,
                 hnsw_ef_construction: 200,
                 hnsw_ef_search: 50,
+                hnsw_flat_embeddings: false,
+                annoy_n_trees: 10,
+                annoy_search_k: -1,
+                sq: false,
             },
             watch: WatchConfig {
                 enabled: false,
