@@ -27,6 +27,7 @@ use crate::index::{Index, ScoredDocument};
 use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
 use std::cmp::Ordering;
+use std::path::Path;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -285,6 +286,51 @@ impl IvfPqIndex {
     /// The index configuration.
     pub fn config(&self) -> &IvfPqConfig {
         &self.config
+    }
+
+    /// Persist the current IVF-PQ state to `.meta` + `.jsonl` files.
+    pub fn save_persistence(&self, base: &Path) -> Result<()> {
+        crate::index::ivf_pq_persistence::save(self, base)
+    }
+
+    /// Load IVF-PQ state from persisted files (returns `None` if absent).
+    pub fn load_persistence(base: &Path, config: &IvfPqConfig) -> Result<Option<Self>> {
+        crate::index::ivf_pq_persistence::load(base, config)
+    }
+
+    /// IVF centroids (pub(crate) for persistence).
+    pub(crate) fn centroids(&self) -> &[Vec<f32>] {
+        &self.centroids
+    }
+
+    /// PQ codebooks (pub(crate) for persistence).
+    pub(crate) fn codebooks(&self) -> &[Vec<Vec<f32>>] {
+        &self.codebooks
+    }
+
+    /// PQ codes per document (pub(crate) for persistence).
+    pub(crate) fn codes(&self) -> &[Vec<u8>] {
+        &self.codes
+    }
+
+    /// Build an index from pre-computed state (used by persistence load).
+    pub(crate) fn from_state(
+        documents: Vec<Document>,
+        config: IvfPqConfig,
+        centroids: Vec<Vec<f32>>,
+        codebooks: Vec<Vec<Vec<f32>>>,
+        codes: Vec<Vec<u8>>,
+        clusters: Vec<Vec<usize>>,
+    ) -> Self {
+        Self {
+            documents,
+            config,
+            centroids,
+            clusters,
+            codebooks,
+            codes,
+            storage: None,
+        }
     }
 
     // ------------------------------------------------------------------

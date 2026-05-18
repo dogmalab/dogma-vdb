@@ -42,6 +42,9 @@ pub enum Error {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 /// Alias for `Result<T, dogma_vdb::Error>`.

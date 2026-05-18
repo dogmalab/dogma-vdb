@@ -8,6 +8,7 @@
 mod brute_force;
 mod hnsw;
 mod ivf_pq;
+pub(crate) mod ivf_pq_persistence;
 mod sq;
 
 pub use brute_force::BruteForceIndex;
