@@ -39,6 +39,9 @@ pub enum Error {
 
     #[error("Feature not available: {0}")]
     FeatureNotAvailable(&'static str),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 /// Alias for `Result<T, dogma_vdb::Error>`.

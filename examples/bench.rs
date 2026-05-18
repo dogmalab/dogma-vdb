@@ -172,10 +172,11 @@ fn main() {
 
         // --- IVF-PQ ---
         let mut ivf_pq = IvfPqIndex::new(IvfPqConfig {
-            n_clusters: 256.min(n),
-            n_subvectors: 8,
+            n_list: 256.min(n),
+            m_subspaces: 8,
             n_probe: 8,
             metric: Metric::Cosine,
+            ..Default::default()
         });
         let start_ivf = Instant::now();
         ivf_pq.insert(&docs);

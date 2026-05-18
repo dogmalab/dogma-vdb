@@ -59,12 +59,19 @@ impl Collection {
                 sq: cfg.sq,
                 sq_rescore: cfg.sq_rescore,
             })),
-            "ivf_pq" => Box::new(IvfPqIndex::new(IvfPqConfig {
-                n_clusters: cfg.ivf_pq_n_clusters,
-                n_subvectors: cfg.ivf_pq_n_subvectors,
-                n_probe: cfg.ivf_pq_n_probe,
-                metric,
-            })),
+            "ivf_pq" => {
+                let ivf_cfg = IvfPqConfig {
+                    n_list: cfg.ivf_pq_n_clusters,
+                    m_subspaces: cfg.ivf_pq_n_subvectors,
+                    n_probe: cfg.ivf_pq_n_probe,
+                    metric,
+                    rerank_enabled: std::env::var("DOGMA_RERANK")
+                        .as_deref()
+                        == Ok("1"),
+                };
+                ivf_cfg.validate()?;
+                Box::new(IvfPqIndex::new(ivf_cfg))
+            }
             _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };
 
@@ -93,12 +100,19 @@ impl Collection {
                 sq: cfg.sq,
                 sq_rescore: cfg.sq_rescore,
             })),
-            "ivf_pq" => Box::new(IvfPqIndex::new(IvfPqConfig {
-                n_clusters: cfg.ivf_pq_n_clusters,
-                n_subvectors: cfg.ivf_pq_n_subvectors,
-                n_probe: cfg.ivf_pq_n_probe,
-                metric,
-            })),
+            "ivf_pq" => {
+                let ivf_cfg = IvfPqConfig {
+                    n_list: cfg.ivf_pq_n_clusters,
+                    m_subspaces: cfg.ivf_pq_n_subvectors,
+                    n_probe: cfg.ivf_pq_n_probe,
+                    metric,
+                    rerank_enabled: std::env::var("DOGMA_RERANK")
+                        .as_deref()
+                        == Ok("1"),
+                };
+                ivf_cfg.validate()?;
+                Box::new(IvfPqIndex::new(ivf_cfg))
+            }
             _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
         };
 

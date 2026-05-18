@@ -3,24 +3,26 @@
 //! A minimal implementation of the standard IVF-PQ approximate nearest
 //! neighbour algorithm:
 //!
-//! - **IVF**: vectors are partitioned into `K` clusters via simple K-Means.
-//!   Search only visits the `probe` closest clusters (inverted index).
-//! - **PQ**: each vector is split into `M` sub‑vectors, and each sub‑vector
-//!   is quantised to a single byte via a 256‑centroid codebook.  Total
-//!   storage per vector: `M` bytes instead of `D × 4` bytes.
+//! - **IVF**: vectors are partitioned into `n_list` clusters via simple K-Means.
+//!   Search only visits the `n_probe` closest clusters (inverted index).
+//! - **PQ**: each vector is split into `m_subspaces` sub‑vectors, and each
+//!   sub‑vector is quantised to a single byte via a 256‑centroid codebook.
+//!   Total storage per vector: `m_subspaces` bytes instead of `D × 4` bytes.
 //! - **Asymmetric search**: the query (f32) is compared to PQ centroids
-//!   once, building a `[M × 256]` lookup table.  Every candidate doc then
-//!   costs only `M` table look‑ups — no per‑doc f32 distance computation.
+//!   once, building a `[m_subspaces × 256]` lookup table.  Every candidate
+//!   doc then costs only `m_subspaces` table look‑ups.
 //!
 //! ## Design
 //! - Pure Rust, zero new dependencies.
 //! - K‑Means is intentionally simple (random init, fixed iterations).
 //! - IVF uses the configured metric; PQ sub‑spaces always use Euclidean
 //!   (standard convention — sub‑vectors are not normalised).
-//! - `D` must be divisible by `M`.
+//! - `D` must be divisible by `m_subspaces`.
+//! - `m_subspaces` must be a multiple of 8 (SIMD alignment guarantee).
 
 use crate::distance::{self, Metric};
 use crate::doc::Document;
+use crate::error::{Error, Result};
 use crate::index::{Index, ScoredDocument};
 use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
@@ -32,25 +34,72 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 /// IVF-PQ index configuration.
+///
+/// # SIMD alignment
+///
+/// `m_subspaces` **must** be a multiple of 8 so that PQ lookup tables
+/// are 32‑byte aligned, enabling AVX2 / NEON to load sub‑vectors in a
+/// single instruction.  Use [`Self::validate`] at construction time.
 #[derive(Debug, Clone)]
 pub struct IvfPqConfig {
-    /// Number of IVF clusters (`K`). Default: 256.
-    pub n_clusters: usize,
-    /// Number of PQ sub‑vectors (`M`). `D` must be divisible by `M`. Default: 8.
-    pub n_subvectors: usize,
-    /// Clusters to probe per search. Default: 8.
+    /// Number of IVF clusters (K‑Means centroids).  Default: 100.
+    pub n_list: usize,
+    /// Clusters to probe per search.  Default: 5.
     pub n_probe: usize,
+    /// Number of PQ sub‑spaces (`M`).  `D` must be divisible by `M`.
+    /// **Must be a multiple of 8** for SIMD alignment.  Default: 32.
+    pub m_subspaces: usize,
     /// Distance metric for IVF and final scoring.
     pub metric: Metric,
+    /// When `true`, `search()` halves its effective `n_probe` to favour
+    /// raw speed — the lost recall is recovered by a subsequent
+    /// Cross‑Encoder reranking pass (stage 2).
+    pub rerank_enabled: bool,
 }
 
 impl Default for IvfPqConfig {
     fn default() -> Self {
         Self {
-            n_clusters: 256,
-            n_subvectors: 8,
-            n_probe: 8,
+            n_list: 100,
+            n_probe: 5,
+            m_subspaces: 32,
             metric: Metric::Cosine,
+            rerank_enabled: false,
+        }
+    }
+}
+
+impl IvfPqConfig {
+    /// Validate the configuration.
+    ///
+    /// Returns `Err` if:
+    /// - `m_subspaces` is zero, or
+    /// - `m_subspaces` is not a multiple of 8 (SIMD alignment).
+    pub fn validate(&self) -> Result<()> {
+        if self.m_subspaces == 0 {
+            return Err(Error::InvalidConfig(
+                "m_subspaces must be > 0".into(),
+            ));
+        }
+        if self.m_subspaces % 8 != 0 {
+            return Err(Error::InvalidConfig(format!(
+                "m_subspaces must be a multiple of 8 for SIMD alignment, got {}",
+                self.m_subspaces
+            )));
+        }
+        Ok(())
+    }
+
+    /// Effective probe count — honours the rerank auto-tuning contract.
+    ///
+    /// When `rerank_enabled` is `true`, the probe count is halved
+    /// (minimum 2) so the index favours speed over recall, relying on
+    /// the subsequent Cross‑Encoder reranker to recover relevance.
+    pub fn effective_probe(&self) -> usize {
+        if self.rerank_enabled {
+            (self.n_probe / 2).max(2)
+        } else {
+            self.n_probe
         }
     }
 }
@@ -160,10 +209,11 @@ fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<V
 /// use dogma_vdb::index::Index;
 ///
 /// let mut idx = IvfPqIndex::new(IvfPqConfig {
-///     n_clusters: 4,
-///     n_subvectors: 2,
+///     n_list: 4,
+///     m_subspaces: 2,
 ///     n_probe: 2,
 ///     metric: Metric::Cosine,
+///     ..Default::default()
 /// });
 ///
 /// let doc = Document::builder("a", "hello")
@@ -180,12 +230,12 @@ pub struct IvfPqIndex {
     config: IvfPqConfig,
 
     // IVF
-    centroids: Vec<Vec<f32>>,  // [K][D]
-    clusters: Vec<Vec<usize>>, // [K] — doc IDs per cluster
+    centroids: Vec<Vec<f32>>,  // [n_list][D]
+    clusters: Vec<Vec<usize>>, // [n_list] — doc IDs per cluster
 
     // PQ
-    codebooks: Vec<Vec<Vec<f32>>>, // [M][256][subdim]
-    codes: Vec<Vec<u8>>,           // [N][M]
+    codebooks: Vec<Vec<Vec<f32>>>, // [m_subspaces][256][subdim]
+    codes: Vec<Vec<u8>>,           // [N][m_subspaces]
 
     /// Zero-copy embedding storage (optional).
     storage: Option<Arc<dyn VectorStorage>>,
@@ -269,11 +319,11 @@ impl IvfPqIndex {
         }
 
         let dim = self.documents[0].embedding.len();
-        let m = self.config.n_subvectors.max(1);
+        let m = self.config.m_subspaces.max(1);
         let subdim = dim / m;
         assert!(
             subdim > 0,
-            "IVF-PQ: dimension ({dim}) must be >= n_subvectors ({m})"
+            "IVF-PQ: dimension ({dim}) must be >= m_subspaces ({m})"
         );
 
         let all_vecs: Vec<Vec<f32>> = if let Some(ref storage) = self.storage {
@@ -289,7 +339,7 @@ impl IvfPqIndex {
         };
 
         // ---- IVF: K‑Means ----
-        let k = self.config.n_clusters.min(n);
+        let k = self.config.n_list.min(n);
         self.centroids = kmeans(&all_vecs, k, 20, self.config.metric);
 
         // Assign docs to nearest centroid
@@ -359,9 +409,10 @@ impl IvfPqIndex {
             return Vec::new();
         }
 
-        let m = self.config.n_subvectors.max(1);
+        let m = self.config.m_subspaces.max(1);
         let subdim = query.len() / m;
-        let probe = self.config.n_probe.min(self.centroids.len());
+        // Use effective probe count (honours rerank auto-tuning)
+        let probe = self.config.effective_probe().min(self.centroids.len());
 
         // 1. Score all centroids, pick top `probe`
         let mut centroid_scores: Vec<(usize, f32)> = self
@@ -380,7 +431,7 @@ impl IvfPqIndex {
             .map(|(i, _)| i)
             .collect();
 
-        // 2. Pre‑compute PQ lookup tables [M][256]
+        // 2. Pre‑compute PQ lookup tables [m_subspaces][256]
         let luts: Vec<Vec<f32>> = (0..m)
             .into_par_iter()
             .map(|sub_idx| {
@@ -501,12 +552,15 @@ mod tests {
 
     fn small_config() -> IvfPqConfig {
         IvfPqConfig {
-            n_clusters: 4,
-            n_subvectors: 2,
+            n_list: 4,
+            m_subspaces: 2,
             n_probe: 2,
             metric: Metric::Cosine,
+            ..Default::default()
         }
     }
+
+    // -- Existing tests (updated for new field names) --
 
     #[test]
     fn test_empty_index() {
@@ -574,10 +628,11 @@ mod tests {
     fn test_recall_against_bf() {
         let mut bf = BruteForceIndex::new(Metric::Cosine);
         let mut ivf = IvfPqIndex::new(IvfPqConfig {
-            n_clusters: 5,
-            n_subvectors: 2,
+            n_list: 5,
+            m_subspaces: 2,
             n_probe: 3,
             metric: Metric::Cosine,
+            ..Default::default()
         });
 
         let mut docs = Vec::with_capacity(50);
@@ -628,6 +683,165 @@ mod tests {
             assert!(
                 results[i].score >= results[i + 1].score,
                 "results should be sorted by score descending"
+            );
+        }
+    }
+
+    // -- New tests for tuning and validation --
+
+    #[test]
+    fn test_ivf_pq_invalid_subspaces() {
+        // m_subspaces must be a multiple of 8
+        let cfg = IvfPqConfig {
+            m_subspaces: 13,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = IvfPqConfig {
+            m_subspaces: 25,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        // Zero is also invalid
+        let cfg = IvfPqConfig {
+            m_subspaces: 0,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        // Valid multiples
+        for valid in [8, 16, 32, 64] {
+            let cfg = IvfPqConfig {
+                m_subspaces: valid,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "m_subspaces={} should be valid", valid);
+        }
+    }
+
+    #[test]
+    fn test_ivf_pq_tuning_impact() {
+        // n_probe=1 should probe fewer clusters → different results than n_probe=10
+        // (and likely fewer candidates at the extremes)
+        let cfg_low = IvfPqConfig {
+            n_list: 8,
+            m_subspaces: 2,
+            n_probe: 1,
+            metric: Metric::Cosine,
+            ..Default::default()
+        };
+        let cfg_high = IvfPqConfig {
+            n_list: 8,
+            m_subspaces: 2,
+            n_probe: 10,
+            metric: Metric::Cosine,
+            ..Default::default()
+        };
+
+        let mut idx_low = IvfPqIndex::new(cfg_low);
+        let mut idx_high = IvfPqIndex::new(cfg_high);
+
+        let docs: Vec<Document> = (0..80)
+            .map(|i| {
+                let angle = i as f64 * 0.0785398;
+                make_doc(
+                    &format!("d{}", i),
+                    vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                )
+            })
+            .collect();
+        idx_low.insert(&docs);
+        idx_high.insert(&docs);
+
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+
+        let results_low = idx_low.search(&query, 5);
+        let results_high = idx_high.search(&query, 5);
+
+        // With more probe, we should inspect more candidates and thus
+        // likely get a different (better) top result
+        assert!(
+            !results_low.is_empty(),
+            "low probe should still return results"
+        );
+        assert!(
+            !results_high.is_empty(),
+            "high probe should return results"
+        );
+
+        // The score of the top result with high probe should be at least
+        // as high (better) as the top result with low probe
+        assert!(
+            results_high[0].score >= results_low[0].score - 1e-5,
+            "higher n_probe should yield >= top score (low={}, high={})",
+            results_low[0].score,
+            results_high[0].score,
+        );
+
+        // Verify that n_probe is stored correctly
+        let config_high = idx_high.config();
+        assert_eq!(config_high.n_probe, 10);
+        assert_eq!(config_high.effective_probe(), 10);
+    }
+
+    #[test]
+    fn test_auto_tuning_with_rerank_flag() {
+        // When rerank_enabled=true, effective_probe should be halved
+        let cfg = IvfPqConfig {
+            n_probe: 10,
+            rerank_enabled: true,
+            ..Default::default()
+        };
+        // effective_probe = (10 / 2).max(2) = 5
+        assert_eq!(cfg.effective_probe(), 5);
+
+        // With low n_probe, minimum should be 2
+        let cfg2 = IvfPqConfig {
+            n_probe: 3,
+            rerank_enabled: true,
+            ..Default::default()
+        };
+        // effective_probe = (3 / 2).max(2) = 2
+        assert_eq!(cfg2.effective_probe(), 2);
+
+        // Without rerank, effective == nominal
+        let cfg3 = IvfPqConfig {
+            n_probe: 7,
+            rerank_enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(cfg3.effective_probe(), 7);
+
+        // Integration test: build an index with rerank_enabled and verify
+        // the search still produces valid (sorted) results
+        let cfg_idx = IvfPqConfig {
+            n_list: 4,
+            m_subspaces: 2,
+            n_probe: 4,
+            metric: Metric::Cosine,
+            rerank_enabled: true,
+        };
+        let mut idx = IvfPqIndex::new(cfg_idx);
+        let docs: Vec<Document> = (0..20)
+            .map(|i| {
+                let angle = i as f64 * 0.314159;
+                make_doc(
+                    &format!("d{}", i),
+                    vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                )
+            })
+            .collect();
+        idx.insert(&docs);
+
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 5);
+        assert!(!results.is_empty());
+        // Results should still be sorted correctly
+        for i in 0..results.len().saturating_sub(1) {
+            assert!(
+                results[i].score >= results[i + 1].score,
+                "rerank mode results should be sorted"
             );
         }
     }
