@@ -365,13 +365,36 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Initialise the Cross-Encoder reranker when `DOGMA_RERANK=1` is set
+    // Initialise the Cross-Encoder reranker when `DOGMA_RERANK=1` is set.
+    // Attempts to load a real ONNX model from DOGMA_RERANK_MODEL_PATH and
+    // DOGMA_RERANK_TOKENIZER_PATH env vars.  Falls back to StubReranker
+    // (deterministic mock) if the model can't be found.
     if std::env::var("DOGMA_RERANK").as_deref() == Ok("1") {
-        let reranker = rerank_adapter::DogmaRerankerAdapter::new(Box::new(
-            dogma_vdb_rerank::StubReranker,
-        ));
-        let _ = RERANKER.set(reranker);
-        tracing::info!("Reranker initialised (StubReranker)");
+        let model_path = std::env::var("DOGMA_RERANK_MODEL_PATH")
+            .unwrap_or_else(|_| "models/bge-reranker-base/model.onnx".into());
+        let tokenizer_path = std::env::var("DOGMA_RERANK_TOKENIZER_PATH")
+            .unwrap_or_else(|_| "models/bge-reranker-base/tokenizer.json".into());
+
+        match dogma_vdb_rerank::OnnxReranker::new(&model_path, &tokenizer_path, 512, 2) {
+            Ok(onnx) => {
+                let reranker =
+                    rerank_adapter::DogmaRerankerAdapter::new(Box::new(onnx));
+                let _ = RERANKER.set(reranker);
+                tracing::info!(
+                    "Reranker initialised (OnnxReranker, model={model_path})"
+                );
+            }
+            Err(e) => {
+                let reranker = rerank_adapter::DogmaRerankerAdapter::new(Box::new(
+                    dogma_vdb_rerank::StubReranker,
+                ));
+                let _ = RERANKER.set(reranker);
+                tracing::warn!(
+                    "OnnxReranker failed to load ({e}); using StubReranker (mock) instead. \
+                     Set DOGMA_RERANK_MODEL_PATH and DOGMA_RERANK_TOKENIZER_PATH"
+                );
+            }
+        }
     } else {
         tracing::info!("Reranker disabled (set DOGMA_RERANK=1 to enable)");
     }

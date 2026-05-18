@@ -9,10 +9,17 @@
 //! Expects an ONNX-exported Cross-Encoder model with:
 //! - Inputs: `input_ids` (i64, shape [batch, seq_len]),
 //!   `attention_mask` (i64, shape [batch, seq_len])
-//! - Output: a single logit per pair (shape [batch, 1] or [batch, 2])
+//! - Output: `"logits"` (f32, shape [batch, 1]) — raw logit per pair.
+//!
+//! The logit is used **raw** (no sigmoid) because only the relative ranking
+//! matters for reranking — sigmoid is a monotonic transform that would add
+//! unnecessary computation without affecting the order.
 //!
 //! Recommended model: [`BAAI/bge-reranker-base`](https://huggingface.co/BAAI/bge-reranker-base)
-//! exported to ONNX via `optimum-cli export onnx --model BAAI/bge-reranker-base onnx/`.
+//! exported to ONNX via:
+//! ```bash
+//! optimum-cli export onnx --model BAAI/bge-reranker-base ./models/bge-reranker-base/
+//! ```
 
 use crate::{CrossEncoderReranker, RerankError};
 use ndarray::Array2;
@@ -67,7 +74,8 @@ impl OnnxReranker {
     /// - `model_path`: path to the `.onnx` model file.
     /// - `tokenizer_path`: path to the `tokenizer.json` file (HF tokenizer).
     /// - `max_length`: maximum sequence length for tokenisation (e.g. 512).
-    /// - `intra_threads`: number of intra-op threads for ORT (0 = auto).
+    /// - `intra_threads`: number of intra-op threads for ORT.
+    ///   Recommended: 2 for MCP servers, 0 lets ORT decide (may use all cores).
     pub fn new(
         model_path: impl AsRef<Path>,
         tokenizer_path: impl AsRef<Path>,
@@ -80,11 +88,14 @@ impl OnnxReranker {
         let mut builder =
             Session::builder().map_err(|e| RerankError::ModelError(format!("ORT builder: {e}")))?;
 
-        if intra_threads > 0 {
-            builder = builder
-                .with_intra_threads(intra_threads)
-                .map_err(|e| RerankError::ModelError(format!("ORT threads: {e}")))?;
-        }
+        // Apply intra_op thread limit if set; ORT's global default can
+        // consume all cores and starve the MCP tokio runtime.  We clamp
+        // to a safe minimum so inference parallelism doesn't overwhelm
+        // the host — 2 threads is a good balance for Cross-Encoder.
+        let threads = if intra_threads == 0 { 2 } else { intra_threads };
+        builder = builder
+            .with_intra_threads(threads)
+            .map_err(|e| RerankError::ModelError(format!("ORT threads: {e}")))?;
 
         let session = builder
             .commit_from_file(model_path.as_ref())
@@ -94,7 +105,7 @@ impl OnnxReranker {
             session,
             tokenizer,
             max_length,
-            intra_threads,
+            intra_threads: threads,
         })
     }
 }
@@ -178,8 +189,9 @@ impl CrossEncoderReranker for OnnxReranker {
             .map_err(|e| RerankError::ModelError(format!("ORT inference: {e}")))?;
 
         // ---- 5. Extract logits ----
-        // Cross-Encoders typically output shape [batch, 1] or [batch, 2].
-        // We extract index 0 for each row as the relevance logit.
+        // bge-reranker-base outputs shape [batch, 1] with a single raw logit
+        // per (query, document) pair.  No sigmoid is applied — the raw logit
+        // is monotonic with respect to relevance, so ranking is preserved.
         let logits_view = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|e| RerankError::ModelError(format!("ORT extract logits: {e}")))?;
@@ -190,20 +202,11 @@ impl CrossEncoderReranker for OnnxReranker {
             .as_slice()
             .ok_or_else(|| RerankError::ModelError("ORT output not contiguous".into()))?;
 
-        // Infer the output dimension: total elements / batch = outputs per pair
-        let num_outputs = logits_slice.len() / batch_size;
+        // Per-row stride: [batch, 1] => stride = 1, [batch, 2] => stride = 2
+        let stride = logits_slice.len() / batch_size;
 
         let mut results: Vec<(usize, f32)> = (0..batch_size)
-            .map(|i| {
-                let score = if num_outputs >= 2 {
-                    // Index 0 is the positive-class logit
-                    logits_slice[i * num_outputs]
-                } else {
-                    // Single logit: apply sigmoid for (0, 1) range
-                    1.0 / (1.0 + (-logits_slice[i]).exp())
-                };
-                (i, score)
-            })
+            .map(|i| (i, logits_slice[i * stride]))
             .collect();
 
         // ---- 6. Sort descending by score ----
