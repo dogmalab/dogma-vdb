@@ -6,19 +6,26 @@
 //! on plain `&[String]` slices, making it usable from any vector store
 //! (dogma-vdb, LanceDB, Qdrant, etc.) or standalone inference pipeline.
 //!
+//! ## Rerankers
+//!
+//! | Implementation | Description |
+//! |---|---|
+//! | [`StubReranker`] | Deterministic mock for dev/test (no model needed) |
+//! | [`OnnxReranker`] | Real ONNX Cross-Encoder via `ort` + `tokenizers` |
+//!
 //! ## Example
 //!
 //! ```ignore
-//! use dogma_vdb_rerank::{CrossEncoderReranker, OnnxReranker};
+//! use dogma_vdb_rerank::{CrossEncoderReranker, StubReranker};
 //!
-//! let reranker = OnnxReranker::new("/path/to/model.onnx")?;
+//! let reranker = StubReranker;
 //! let scores = reranker.compute_scores("rust vs python", &[
 //!     "Rust is a systems language".into(),
 //!     "Python is dynamically typed".into(),
-//!     "Java runs on a VM".into(),
 //! ])?;
-//! // scores[0] is the most relevant (index, score)
 //! ```
+
+pub mod onnx;
 
 use thiserror::Error;
 
@@ -67,8 +74,7 @@ pub trait CrossEncoderReranker: Send + Sync {
 /// meaningful.
 ///
 /// When you have an actual ONNX Cross-Encoder model (e.g.
-/// `bge-reranker-base`), replace this with [`OnnxReranker`] or a custom
-/// [`CrossEncoderReranker`] implementation.
+/// `bge-reranker-base`), use [`OnnxReranker`] instead.
 pub struct StubReranker;
 
 impl CrossEncoderReranker for StubReranker {
@@ -83,12 +89,7 @@ impl CrossEncoderReranker for StubReranker {
 
         // Deterministic "relevance" based on text length
         // (shorter texts score higher — just a stable mock).
-        let max_len = documents
-            .iter()
-            .map(|d| d.len())
-            .max()
-            .unwrap_or(1)
-            .max(1) as f32;
+        let max_len = documents.iter().map(|d| d.len()).max().unwrap_or(1).max(1) as f32;
 
         let mut results: Vec<(usize, f32)> = documents
             .iter()
@@ -107,49 +108,8 @@ impl CrossEncoderReranker for StubReranker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Placeholder for real ONNX inference
-// ---------------------------------------------------------------------------
-
-/// Real ONNX Cross-Encoder reranker.
-///
-/// **Not yet implemented** — this is a placeholder struct that mirrors
-/// the signature of a production reranker.  When ready, wire in `ort`
-/// and `tokenizers`:
-///
-/// ```ignore
-/// // (requires ort + tokenizers dependencies)
-/// let session = ort::Session::builder()?.commit_from_file(path)?;
-/// let tokenizer = tokenizers::Tokenizer::from_file("tokenizer.json")?;
-/// ```
-pub struct OnnxReranker {
-    // TODO: ort::Session, tokenizers::Tokenizer
-}
-
-impl OnnxReranker {
-    /// Load a Cross-Encoder ONNX model from disk.
-    ///
-    /// The model must accept `(query, document)` pairs as input and
-    /// output a single logit per pair.
-    pub fn new(_model_path: &str) -> Result<Self, RerankError> {
-        // TODO: init ort::Session + tokenizers::Tokenizer
-        Err(RerankError::ModelError(
-            "ONNX inference not wired yet — use StubReranker for now".into(),
-        ))
-    }
-}
-
-impl CrossEncoderReranker for OnnxReranker {
-    fn compute_scores(
-        &self,
-        _query: &str,
-        _documents: &[String],
-    ) -> Result<Vec<(usize, f32)>, RerankError> {
-        Err(RerankError::ModelError(
-            "ONNX inference not wired yet — use StubReranker for now".into(),
-        ))
-    }
-}
+/// Convenience re-export of the ONNX-backed reranker.
+pub use onnx::OnnxReranker;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -185,7 +145,7 @@ mod tests {
             .compute_scores(
                 "rust",
                 &[
-                    "a".into(),                                 // short → high score
+                    "a".into(),                                  // short → high score
                     "very long document about something".into(), // long → low score
                     "medium text".into(),                        // medium
                 ],
@@ -212,12 +172,5 @@ mod tests {
             assert!(*score >= 0.3);
             assert!(*score <= 1.0);
         }
-    }
-
-    #[test]
-    fn test_onnx_reranker_new_errors() {
-        // Without a real model, OnnxReranker::new should return an error
-        let result = OnnxReranker::new("/nonexistent/model.onnx");
-        assert!(result.is_err());
     }
 }

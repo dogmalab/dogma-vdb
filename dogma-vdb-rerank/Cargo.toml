@@ -7,3 +7,18 @@ description = "Agnostic local Cross-Encoder reranking for Rust — compatible wi
 [dependencies]
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+
+# ONNX Runtime for Rust — Cross-Encoder inference
+ort = { version = "=2.0.0-rc.9", features = ["download-binaries", "ndarray"] }
+
+# ndarray for tensor construction (re-exported by ort but needed directly)
+ndarray = "0.16"
+
+# HuggingFace tokenizers — fast BPE/WordPiece tokenization
+tokenizers = "0.15"
+
+# Parallel batch inference
+rayon = "1"
+
+# Logging
+log = "0.4"
