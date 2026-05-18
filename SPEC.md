@@ -65,19 +65,25 @@ pub trait Index: Send + Sync {
 - **Descripcion**: Busqueda aproximada via archivo invertido (IVF) +
   cuantizacion de producto (PQ). Particiona el espacio con K-Means,
   comprime subvectores a u8 para minimizar memoria.
-- **Entrada**: Documentos con embedding + IvfPqConfig { nlist, m, nprobe, metric }.
+- **Entrada**: Documentos con embedding + IvfPqConfig { n_list, n_probe, m_subspaces, metric, rerank_enabled }.
 - **Salida**: Top-k aproximado.
 - **Comportamiento**:
   1. **Build** (batch): ejecuta K-Means sobre todos los embeddings
-     para construir `nlist` centroides.
+     para construir `n_list` centroides.
   2. Asigna cada embedding a su centroide mas cercano y lo particiona
-     en `m` subvectores. Cada subvector se cuantiza a u8.
+     en `m_subspaces` subvectores. Cada subvector se cuantiza a u8.
   3. Almacena las tablas PQ (centroides de subvectores) y los codigos
      cuantizados (u8) por documento.
-  4. **Busqueda**: calcula distancia del query a los `nprobe` centroides
+  4. **Busqueda**: calcula distancia del query a los `n_probe` centroides
      mas cercanos. Para cada cluster, construye lookup tables (LUTs)
      de distancias asimetricas y escanea los codigos u8.
-  5. `insert()` / `delete()`: rebuild completo del indice.
+  5. **Auto-tuning con rerank**: si `rerank_enabled=true`, el `n_probe`
+     efectivo se reduce a la mitad (mínimo 2) para priorizar velocidad.
+     El recall perdido se recupera en el paso de Cross-Encoder posterior.
+  6. `insert()` / `delete()`: rebuild completo del indice.
+- **Validacion**: `m_subspaces` debe ser multiplo de 8 (alineación SIMD
+  para AVX2/NEON). `IvfPqConfig::validate()` retorna `Error::InvalidConfig`
+  si no se cumple.
 - **Condiciones**: Ideal para datasets estaticos o semi-estaticos donde
   se prioriza el ahorro de memoria (~8× menos RAM que HNSW/BF).
 - **Estado**: IMPLEMENTADO.
@@ -194,9 +200,9 @@ hnsw_ef_search = 50
 hnsw_flat_embeddings = false
 
 # IVF-PQ
-ivf_pq_nlist = 16             # numero de centroides K-Means
-ivf_pq_m = 8                  # numero de subvectores (PQ)
-ivf_pq_nprobe = 8             # clusters a explorar en busqueda
+ivf_pq_n_clusters = 100          # n_list — centroides K-Means
+ivf_pq_n_subvectors = 32         # m_subspaces — subvectores PQ (multiplo de 8)
+ivf_pq_n_probe = 5               # clusters a explorar en busqueda
 
 # SQ (ortogonal, aplica a cualquier backend)
 sq = false
@@ -259,3 +265,6 @@ Si en el futuro se implementa `serve_http`, se anadiran:
 | Build | IVF-PQ | 5000 docs | build | < 50ms |
 | Memoria | HNSW+SQ | 100K docs 768-dim | insert | < 150 MB RAM |
 | Carga fria | MmapBackedStorage | 5K docs 384-dim | open | < 1ms |
+| Validacion SIMD | IVF-PQ | m_subspaces=13 | validate() | Error::InvalidConfig |
+| Auto-tuning | IVF-PQ | rerank_enabled=true, n_probe=10 | effective_probe() | 5 |
+| Auto-tuning (min) | IVF-PQ | rerank_enabled=true, n_probe=3 | effective_probe() | 2 |

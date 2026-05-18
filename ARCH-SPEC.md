@@ -142,19 +142,20 @@ lo usa cuando `sq=true`.
 ```rust
 pub struct IvfPqIndex {
     documents: Vec<Document>,       // metadata, text, embedding (f32)
-    centroids: Vec<Vec<f32>>,       // nlist centroides K-Means (f32)
-    pq_codebook: Vec<Vec<f32>>,     // m sub-codebooks (256 x (d/m) c/u)
-    codes: Vec<Vec<u8>>,            // codigos PQ por documento (m bytes c/u)
+    centroids: Vec<Vec<f32>>,       // n_list centroides K-Means (f32)
+    pq_codebook: Vec<Vec<Vec<f32>>>, // m_subspaces sub-codebooks (256 x (d/m) c/u)
+    codes: Vec<Vec<u8>>,            // codigos PQ por documento (m_subspaces bytes c/u)
     assignments: Vec<usize>,        // asignacion cluster por documento
     config: IvfPqConfig,
     storage: Arc<dyn VectorStorage>, // embeddings contiguos compartidos
 }
 
 pub struct IvfPqConfig {
-    pub nlist: usize,               // numero de centroides (default: 16)
-    pub m: usize,                   // numero de subvectores (default: 8)
-    pub nprobe: usize,              // clusters a explorar (default: 8)
+    pub n_list: usize,               // numero de centroides (default: 100)
+    pub m_subspaces: usize,          // numero de subvectores (default: 32, multiplo de 8)
+    pub n_probe: usize,              // clusters a explorar (default: 5)
     pub metric: Metric,
+    pub rerank_enabled: bool,        // auto-tuning: reduce n_probe a la mitad
 }
 ```
 
@@ -201,21 +202,21 @@ fn search(query, k) -> Vec<ScoredDocument>:
 
 | Operacion | Complejidad |
 |-----------|-------------|
-| Build (K-Means) | O(nlist · n · d · iter) |
-| Build (PQ) | O(256 · m · (d/m) · n) = O(256 · d · n) |
-| Search | O(nlist · d + nprobe · (n/nlist) · m) |
+| Build (K-Means) | O(n_list · n · d · iter) |
+| Build (PQ) | O(256 · m_subspaces · (d/m_subspaces) · n) = O(256 · d · n) |
+| Search | O(n_list · d + effective_probe · (n/n_list) · m_subspaces) |
+
+donde `effective_probe = n_probe` si `rerank_enabled=false`, o
+`(n_probe / 2).max(2)` si `rerank_enabled=true`.
 
 ### 5.5. Memoria
 
-Para 5K docs 128-dim, nlist=16, m=8:
-- Centroides: 16 × 128 × 4B = 8 KB
-- PQ codebook: 8 × 256 × (128/8) × 4B = 128 KB
-- Codes: 5K × 8B = 40 KB
+Para 5K docs 128-dim, n_list=100, m_subspaces=32:
+- Centroides: 100 × 128 × 4B = 51 KB
+- PQ codebook: 32 × 256 × (128/32) × 4B = 128 KB
+- Codes: 5K × 32B = 160 KB
 - Asignaciones: 5K × 8B = 40 KB
-- **Total: ~216 KB** (~300 KB con overhead)
-
-Vs HNSW/BF: 5K × 128 × 4B = **2.5 MB** solo embeddings.
-**Ahorro: ~8-12×**
+- **Total: ~380 KB** (~8× menos que HNSW/BF)
 
 ---
 

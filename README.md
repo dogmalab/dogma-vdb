@@ -2,9 +2,10 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: Beta — core compiles, **162 tests pass**, SIMD-accelerated,
+**Status**: Beta — core compiles, **172 tests pass**, SIMD-accelerated,
 binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
-CLI, MCP server, file watcher, FastEmbed ONNX integration, LangChain MCP adapter.
+CLI, MCP server, file watcher, FastEmbed ONNX integration, LangChain MCP adapter,
+Cross-Encoder reranking pipeline.
 
 ---
 
@@ -18,6 +19,10 @@ The indexing strategy and storage ecosystem have been redesigned:
 - **`MmapBackedStorage`** — memory-mapped zero-copy loading (~0ms cold start)
 - **Binary format v2** — 32-byte aligned padding for AVX2-safe SIMD
 - **HNSW+SQ recall fixed** — from 0-60% to 90% (midpoint bias + rescore)
+- **IVF-PQ tuning** — SIMD-aligned `m_subspaces` (multiple of 8), auto-tuning
+  with rerank flag halves probe count for speed
+- **Two-stage reranking** — new `dogma-vdb-rerank` crate with `CrossEncoderReranker`
+  trait, `StubReranker`, and MCP integration via `DOGMA_RERANK=1`
 
 ---
 
@@ -68,14 +73,21 @@ operate at maximum speed without alignment faults.
 - **JSONL export**: `collection.export_jsonl()` for debug with `cat`, `grep`, `sed`
 - **No server**: file-based, zero config, no daemon
 - **MCP-ready**: optional MCP server (stdio) for Claude Desktop / Cursor / opencode
+- **Two-stage reranking** — MCP query supports `rerank=true` for Cross-Encoder
+  rescoring after vector retrieval. Enabled via `DOGMA_RERANK=1`
+- **Cross-Encoder reranking crate** — `dogma-vdb-rerank` with agnostic
+  `CrossEncoderReranker` trait (no dogma-vbd dependency)
+- **IVF-PQ SIMD-aligned** — `m_subspaces` must be multiple of 8 for AVX2-safe
+  lookup tables. Validated at construction time.
+- **Rerank-aware IVF-PQ** — when `rerank_enabled=true`, IVF-PQ halves its
+  probe count to favour speed; recall is recovered by the Cross-Encoder pass.
 - **LangChain MCP adapter**: `examples/langchain_mcp.py` — zero-code integration
 - **Watch mode**: optional file watcher for auto-reindexing
 - **FastEmbed ONNX**: `FastEmbedder` with all-MiniLM-L6-v2 (384-dim, ~90MB model)
-- **Pure Rust**: HNSW, IVF-PQ, SQ algorithms are custom implementations
+- **Pure Rust**: HNSW, IVF-PQ, SQ, reranker are custom implementations
 - **Zero unsafe** in production logic — unsafe blocks strictly isolated to
   byte-conversion in the storage trait
 - **SIGBUS defensive docs**: explicit documentation on `MmapBackedStorage`
-  warning about external file modification
 
 ## Quick Start
 
@@ -97,7 +109,7 @@ col.export_jsonl("my_data.jsonl")?;
 | **HNSW (ef=50)** | **77** | **100%** | 3.6× vs no-SIMD |
 | HNSW+SQ+Rescore | 73 | 90% | ~4× less RAM |
 | HNSW+Flat | 79 | 100% | Cache win >100K |
-| **IVF-PQ** (nlist=16) | **128** | **95%** | ~300 KB RAM (8× less) |
+| **IVF-PQ** (n_list=16) | **128** | **95%** | ~300 KB RAM (8× less) |
 | BruteForce | 1,460 | 100% | Exact |
 | BF+SQ | 1,584 | 40% | 4× less RAM |
 
@@ -121,16 +133,20 @@ col.export_jsonl("my_data.jsonl")?;
 | IVF-PQ | Inverted file + Product Quantization | Approx | ❌ (batch) | Minimal (~300 KB) | 128 us/q | Max resource savings |
 | SQ (i8) | Scalar quantization | Orthogonal | ✅ | 4× reduction | Varies | Savings layer on any index |
 
-> **HNSW + SQ + Rescore** now achieves **90% recall** with identical 73 us/query
+> **HNSW + SQ + Rescore** achieves **90% recall** with identical 73 us/query
 > latency, thanks to corrected midpoint bias and per-document scale/bias.
 
-### IVF-PQ in detail
+### IVF-PQ tuning
 
-- **Space partitioning**: K-Means clustering into inverted lists (nlist).
-- **Extreme compression**: PQ splits vectors into 8 sub-vectors, quantized
-  to `u8` each. Total RAM: ~300 KB for 5K 128-dim (8× less than HNSW/BF).
-- **Speed**: Asymmetric scan with precomputed lookup tables in CPU cache.
-  25× faster than the retired Annoy backend.
+| Parameter | Default | Description |
+|-----------|:-------:|-------------|
+| `n_list` | 100 | Number of IVF centroids (K-Means) |
+| `n_probe` | 5 | Clusters to probe per search |
+| `m_subspaces` | 32 | PQ sub-spaces (must be multiple of 8 for SIMD) |
+
+When `DOGMA_RERANK=1` is set, IVF-PQ auto-reduces its probe count by half
+(minimum 2) to prioritise speed, relying on the Cross-Encoder reranker to
+recover recall in the second stage.
 
 ---
 
@@ -148,9 +164,9 @@ hnsw_ef_search = 50
 hnsw_flat_embeddings = false
 
 # IVF-PQ
-ivf_pq_nlist = 16                # number of centroids (K-Means)
-ivf_pq_m = 8                     # number of sub-vectors (PQ)
-ivf_pq_nprobe = 8                # clusters to search
+ivf_pq_n_clusters = 100          # n_list — K-Means centroids
+ivf_pq_n_subvectors = 32         # m_subspaces — PQ sub-vectors (multiple of 8)
+ivf_pq_n_probe = 5               # clusters to probe per search
 
 # SQ (orthogonal — applies to any backend)
 sq = false
@@ -168,6 +184,7 @@ sq_rescore = false
 | `dogma-vdb-embed` | Embedder trait definition |
 | `dogma-vdb-embed-fastembed` | Fastembed (ONNX) integration (384-dim MiniLM-L6-v2) |
 | `dogma-vdb-mcp` | MCP server over stdio |
+| `dogma-vdb-rerank` | Agnostic Cross-Encoder reranking (`CrossEncoderReranker` trait) |
 
 ---
 
@@ -175,7 +192,7 @@ sq_rescore = false
 
 ```bash
 cargo check --workspace
-cargo test          # 162 tests
+cargo test          # 172 tests
 cargo clippy -- -D warnings
 cargo fmt --check
 cargo run --release --example bench
