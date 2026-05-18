@@ -22,6 +22,9 @@ mod code;
 mod jsonl;
 mod markdown;
 mod paragraph;
+mod semantic;
+#[cfg(feature = "chunker-syntax")]
+mod syntax;
 
 use crate::doc::Document;
 use rayon::prelude::*;
@@ -32,6 +35,9 @@ pub use code::CodeChunker;
 pub use jsonl::JsonLinesChunker;
 pub use markdown::MarkdownChunker;
 pub use paragraph::ParagraphChunker;
+pub use semantic::SemanticChunker;
+#[cfg(feature = "chunker-syntax")]
+pub use syntax::SyntaxChunker;
 
 // ---------------------------------------------------------------------------
 // FileType detection
@@ -48,6 +54,8 @@ pub enum FileType {
     Markdown,
     Text,
     JsonLines,
+    /// Explicit semantic chunking (not auto-detected from extension).
+    Semantic,
     Unknown,
 }
 
@@ -85,6 +93,7 @@ impl FileType {
             FileType::Markdown => "Markdown",
             FileType::Text => "Text",
             FileType::JsonLines => "JSON Lines",
+            FileType::Semantic => "Semantic",
             FileType::Unknown => "Unknown",
         }
     }
@@ -179,6 +188,11 @@ pub struct SmartChunker {
     markdown: MarkdownChunker,
     text: ParagraphChunker,
     jsonl: JsonLinesChunker,
+    /// AST‑based code chunker (only with `chunker-syntax` feature).
+    #[cfg(feature = "chunker-syntax")]
+    syntax: Option<SyntaxChunker>,
+    /// Embedding‑based prose chunker (injected via [`SmartChunker::with_semantic`]).
+    semantic: Option<SemanticChunker>,
 }
 
 impl SmartChunker {
@@ -214,7 +228,29 @@ impl SmartChunker {
             markdown: MarkdownChunker,
             text: ParagraphChunker::new(overlap),
             jsonl: JsonLinesChunker,
+            #[cfg(feature = "chunker-syntax")]
+            syntax: SyntaxChunker::new().ok(),
+            semantic: None,
         }
+    }
+
+    /// Enable semantic chunking with an [`Embedder`](crate::embedding::Embedder).
+    ///
+    /// When set, `FileType::Semantic` chunks text via embedding similarity
+    /// instead of paragraph boundaries.
+    pub fn with_semantic(mut self, embedder: Box<dyn crate::embedding::Embedder>) -> Self {
+        self.semantic = Some(SemanticChunker::new(embedder, 0.35));
+        self
+    }
+
+    /// Enable semantic chunking with full configuration.
+    pub fn with_semantic_config(
+        mut self,
+        embedder: Box<dyn crate::embedding::Embedder>,
+        threshold: f32,
+    ) -> Self {
+        self.semantic = Some(SemanticChunker::new(embedder, threshold));
+        self
     }
 
     /// Chunk a file, auto-detecting the type from its path.
@@ -227,13 +263,35 @@ impl SmartChunker {
     pub fn chunk_text(&self, text: &str, file_type: FileType) -> Vec<SmartChunk> {
         let max = self.config.max_chunk_size;
         match file_type {
-            FileType::Rust => self.rust.chunk(text, max),
-            FileType::Python => self.python.chunk(text, max),
-            FileType::JavaScript => self.javascript.chunk(text, max),
-            FileType::Go => self.go.chunk(text, max),
+            FileType::Rust | FileType::Python | FileType::JavaScript | FileType::Go => {
+                // Syntax (AST) chunker has priority when feature is enabled
+                #[cfg(feature = "chunker-syntax")]
+                if let Some(ref syn) = self.syntax {
+                    let result = syn.chunk(text, file_type, max);
+                    if !result.is_empty() {
+                        return result;
+                    }
+                }
+                // Fallback: regex-based code chunker
+                match file_type {
+                    FileType::Rust => self.rust.chunk(text, max),
+                    FileType::Python => self.python.chunk(text, max),
+                    FileType::JavaScript => self.javascript.chunk(text, max),
+                    FileType::Go => self.go.chunk(text, max),
+                    _ => unreachable!(),
+                }
+            }
             FileType::Markdown => self.markdown.chunk(text, max),
             FileType::Text => self.text.chunk(text, max),
             FileType::JsonLines => self.jsonl.chunk(text, max),
+            FileType::Semantic => {
+                if let Some(ref sem) = self.semantic {
+                    sem.chunk(text, max)
+                } else {
+                    // No embedder configured → paragraph fallback
+                    self.text.chunk(text, max)
+                }
+            }
             FileType::Unknown => self.text.chunk(text, max),
         }
     }
@@ -737,5 +795,43 @@ mod tests {
         for pair in chunks.windows(2) {
             assert!(pair[0].end_line <= pair[1].start_line, "gap/overlap");
         }
+    }
+
+    // -- Semantic chunker (integration) --
+
+    #[test]
+    fn test_semantic_fallback_when_not_configured() {
+        let chunker = SmartChunker::default();
+        // Without embedder, Semantic falls back to paragraph chunking
+        let chunks = chunker.chunk_text("One.\n\nTwo.", FileType::Semantic);
+        assert!(!chunks.is_empty());
+        assert!(chunks[0].structure.is_none());
+    }
+
+    #[test]
+    fn test_semantic_file_type_name() {
+        assert_eq!(FileType::Semantic.name(), "Semantic");
+        // Semantic is never auto-detected from extension
+        assert_eq!(FileType::from_extension("txt"), FileType::Text);
+    }
+
+    #[test]
+    fn test_semantic_empty_text() {
+        let chunker = SmartChunker::default();
+        let chunks = chunker.chunk_text("", FileType::Semantic);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.is_empty());
+    }
+
+    // -- Syntax chunker fallback (works with or without feature flag) --
+
+    #[test]
+    fn test_syntax_fallback_regex() {
+        // Without chunker-syntax, or if syntax returns empty, regex kicks in.
+        let chunker = SmartChunker::default();
+        let code = "fn a() {}\nfn b() {}";
+        let chunks = chunker.chunk_text(code, FileType::Rust);
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0].structure.as_deref(), Some("a"));
     }
 }

@@ -14,6 +14,13 @@ categories = ["database", "science", "wasm"]
 default = []
 watch = ["dep:notify", "dep:crossbeam-channel"]
 mcp = ["dep:rmcp", "dep:tokio", "dep:tracing", "dep:clap"]
+chunker-syntax = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-go",
+]
 
 [dependencies]
 serde        = { version = "1", features = ["derive"] }
@@ -49,6 +56,13 @@ rmcp                = { version = "1", optional = true }
 tokio               = { version = "1", features = ["full"], optional = true }
 tracing             = { version = "0.1", optional = true }
 clap                = { version = "4", features = ["derive"], optional = true }
+
+# Syntax chunker via Tree-sitter AST (opcional, feature chunker-syntax)
+tree-sitter              = { version = "0.22", optional = true }
+tree-sitter-rust         = { version = "0.21", optional = true }
+tree-sitter-python       = { version = "0.21", optional = true }
+tree-sitter-javascript   = { version = "0.21", optional = true }
+tree-sitter-go           = { version = "0.21", optional = true }
 
 [dev-dependencies]
 tempfile    = "3"

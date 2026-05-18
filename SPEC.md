@@ -110,7 +110,55 @@ pub trait Index: Send + Sync {
 
 ---
 
-## 3. Metrica de Distancia
+## 3. Smart Chunker
+
+### RF-05: Syntax Chunker (Tree-sitter)
+
+- **Feature flag**: `chunker-syntax`
+- **Descripcion**: Parser sintáctico real basado en AST via tree-sitter.
+  Sustituye el motor de regex en `CodeChunker` cuando está disponible.
+- **Lenguajes**: Rust, Python, JavaScript/TypeScript, Go.
+- **Implementacion**: `src/smart_chunker/syntax.rs` — 247 líneas.
+- **Comportamiento**:
+  1. Inicializa parsers tree-sitter para cada lenguaje (cfg-gated).
+  2. Parsea el código fuente completo → AST.
+  3. Camina los hijos de nivel superior del nodo raíz (`source_file`).
+  4. Detecta definiciones estructurales (funciones, structs, clases, traits, impls, mods).
+  5. Extrae el nombre via `child_by_field_name("name")` (o `"type"` para impls).
+  6. Construye `SmartChunk` con `structure: Some("fn name")`.
+  7. Define chunks entre boundaries consecutivos (mismo algoritmo que CodeChunker).
+- **Nombres extraídos con precisión quirúrgica**:
+  - `function_item` → `child_by_field_name("name")`
+  - `struct_item` → `child_by_field_name("name")`
+  - `decorated_definition` (Python) → look inside for inner `function_definition` name
+  - `impl_item` → `impl Type` o `impl Trait for Type`
+- **Fallback**: Si la flag no está activa, o tree-sitter falla (parse error),
+  se usa el `CodeChunker` regex existente. Zero regresión.
+
+### RF-06: Semantic Chunker
+
+- **Descripcion**: Divide texto denso (prosa, ensayos, libros) por
+  similitud semántica de embeddings.
+- **Implementacion**: `src/smart_chunker/semantic.rs` — 236 líneas.
+- **Algoritmo**:
+  1. Dividir el texto en oraciones via regex (`[.!?]\s+` + saltos de párrafo).
+  2. Incrustar cada oración con el `Embedder` configurado.
+  3. Calcular distancia coseno entre oraciones adyacentes.
+  4. Cortar donde distancia > threshold (default 0.35) **y** caracteres acumulados ≥ min_chunk (128).
+- **Dependencia**: Requiere un `Embedder` (crate `dogma-vdb-embed`) inyectado
+  via `SmartChunker::with_semantic(embedder)` o `with_semantic_config(embedder, threshold)`.
+- **Fallback**: Sin embedder configurado, `FileType::Semantic` cae en
+  `ParagraphChunker` (línea de base sin dependencias).
+
+### RF-07: FileType::Semantic
+
+- No se auto-detecta desde extension de archivo.
+- El usuario lo asigna explícitamente.
+- `FileType::Semantic.name()` = "Semantic".
+
+---
+
+## 4. Metrica de Distancia
 
 Soportadas por todos los backends:
 
@@ -122,9 +170,9 @@ Soportadas por todos los backends:
 
 ---
 
-## 4. VectorStorage Trait
+## 5. VectorStorage Trait
 
-### RF-05: VectorStorage
+### RF-08: VectorStorage
 
 - **Descripcion**: Abstraccion que desacopla el almacenamiento de vectores
   del ciclo de vida de los indices. Permite inyectar embeddings contiguos
@@ -146,9 +194,9 @@ pub trait VectorStorage: Send + Sync {
 
 ---
 
-## 5. Filtrado de Metadatos
+## 6. Filtrado de Metadatos
 
-### RF-06: Filter API
+### RF-09: Filter API
 
 - `metadata_eq(key, value)` → igualdad exacta de string.
 - `metadata_contains(key, substr)` → substring match.
@@ -164,7 +212,7 @@ pub trait VectorStorage: Send + Sync {
 
 ---
 
-## 6. API de Alto Nivel
+## 7. API de Alto Nivel
 
 ### Collection (implementado)
 
@@ -184,7 +232,7 @@ El tipo de indice se elige desde config (`index_type: bruteforce|hnsw|ivf_pq`).
 
 ---
 
-## 7. Configuracion
+## 8. Configuracion
 
 ### config.toml (CollectionConfig)
 
@@ -211,9 +259,9 @@ sq_rescore = false
 
 ---
 
-## 8. Almacenamiento Binario (v2)
+## 9. Almacenamiento Binario (v2)
 
-### RF-07: BinStorage v2
+### RF-10: BinStorage v2
 
 - **Formato**: Header JSON/TOML + padding 32-byte + vectores f32 contiguos.
 - **Padding**: Bytes de relleno dinamico post-header para alinear la seccion
@@ -224,7 +272,7 @@ sq_rescore = false
 
 ---
 
-## 9. Modelo de Seguridad
+## 10. Modelo de Seguridad
 
 dogma-vdb es una herramienta **CLI local / libreria embebible**:
 

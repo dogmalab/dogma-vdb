@@ -68,7 +68,9 @@ impl Embedder for FastEmbedder {
         &self,
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
-        let owned: Vec<&str> = texts.iter().map(|s| *s).collect();
+        // &str doesn't implement Copy, so .copied().collect() is the correct pattern
+        #[allow(clippy::iter_cloned_collect)]
+        let owned: Vec<&str> = texts.iter().copied().collect();
         Ok(self
             .model
             .embed(owned, Some(texts.len()))
