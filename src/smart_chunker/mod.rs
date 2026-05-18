@@ -24,6 +24,7 @@ mod markdown;
 mod paragraph;
 
 use crate::doc::Document;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -105,6 +106,37 @@ pub struct SmartChunk {
     pub start_line: usize,
     /// 0-indexed end line (exclusive).
     pub end_line: usize,
+}
+
+/// A file to process in a batch chunking operation.
+///
+/// Carries the file path (for type detection and document naming) and
+/// its raw text content.
+#[derive(Debug, Clone)]
+pub struct InputFile {
+    /// File path (used for type detection and `base_id`).
+    pub path: String,
+    /// Raw file content.
+    pub text: String,
+    /// Optional extra metadata to attach to every chunk from this file.
+    pub metadata: HashMap<String, String>,
+}
+
+impl InputFile {
+    /// Create a new input file with the given path and content.
+    pub fn new(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            text: text.into(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Attach metadata that will be inherited by every chunk.
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +269,62 @@ impl SmartChunker {
             })
             .collect()
     }
+
+    /// Process multiple files in parallel using the rayon thread pool.
+    ///
+    /// Each file is chunked independently on its own rayon worker thread.
+    /// The internal chunkers (`CodeChunker`, `MarkdownChunker`, etc.)
+    /// remain 100% sequential — concurrency is only at the batch level.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use dogma_vdb::smart_chunker::{InputFile, SmartChunker};
+    ///
+    /// let chunker = SmartChunker::default();
+    /// let files = vec![
+    ///     InputFile::new("hello.py", "def greet(): pass"),
+    ///     InputFile::new("note.md", "# Title\n\nSome text."),
+    /// ];
+    /// let docs = chunker.chunk_batch(&files);
+    /// assert_eq!(docs.len(), 2); // one Python chunk + one markdown chunk
+    /// ```
+    pub fn chunk_batch(&self, files: &[InputFile]) -> Vec<Document> {
+        files
+            .par_iter()
+            .flat_map(|f| {
+                let file_type = FileType::from_path(&f.path);
+                let base_id = Path::new(&f.path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("file");
+                let mut extra_meta = f.metadata.clone();
+                extra_meta.insert("source".into(), f.path.clone());
+                let file_type_name = file_type.name().to_string();
+                extra_meta.insert("language".into(), file_type_name);
+
+                let chunks = self.chunk_text(&f.text, file_type);
+
+                chunks
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(i, chunk)| {
+                        let mut meta = extra_meta.clone();
+                        if let Some(ref s) = chunk.structure {
+                            meta.insert("structure".into(), s.clone());
+                        }
+                        meta.insert("level".into(), chunk.level.to_string());
+                        meta.insert("start_line".into(), chunk.start_line.to_string());
+                        meta.insert("end_line".into(), chunk.end_line.to_string());
+
+                        Document::builder(format!("{}-{}", base_id, i), chunk.text)
+                            .metadatas(meta)
+                            .build()
+                    })
+                    .collect::<Vec<Document>>()
+            })
+            .collect()
+    }
 }
 
 impl Default for SmartChunker {
@@ -278,6 +366,114 @@ fn subdivide_by_lines(chunk: &SmartChunk, max_size: usize) -> Vec<SmartChunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Batch parallel execution --
+
+    #[test]
+    fn test_batch_parallel_execution() {
+        let chunker = SmartChunker::default();
+        let files = vec![
+            InputFile::new("a.rs", "fn hello() {}\nfn world() {}"),
+            InputFile::new(
+                "b.md",
+                "# Title\n\nParagraph one.\n\n## Sub\n\nSub text.",
+            ),
+            InputFile::new("c.py", "def a(): pass\n\ndef b(): pass\n\nclass C: pass"),
+            InputFile::new("d.txt", "Just a short text."),
+            InputFile::new("e.jsonl", "{\"a\":1}\n{\"b\":2}"),
+        ];
+
+        let docs = chunker.chunk_batch(&files);
+
+        // Verify we got the expected chunk count:
+        // a.rs: 2 functions = 2 chunks
+        // b.md: 2 headers = 2 chunks
+        // c.py: 3 functions/classes = 3 chunks
+        // d.txt: 1 text = 1 chunk
+        // e.jsonl: 2 lines = 2 chunks
+        // Total: 10
+        assert_eq!(
+            docs.len(),
+            10,
+            "batch should produce exactly 10 chunks across 5 files"
+        );
+
+        // Verify each doc has a unique ID and the expected metadata
+        let mut ids = std::collections::HashSet::new();
+        for doc in &docs {
+            // Every ID must be unique
+            assert!(
+                ids.insert(doc.id.clone()),
+                "duplicate document ID: {}",
+                doc.id
+            );
+            // Every doc must have language and source metadata
+            assert!(
+                doc.metadata.contains_key("language"),
+                "doc {} missing 'language'",
+                doc.id
+            );
+            assert!(
+                doc.metadata.contains_key("source"),
+                "doc {} missing 'source'",
+                doc.id
+            );
+            // start_line and end_line must be present and consistent
+            let start: usize = doc
+                .metadata
+                .get("start_line")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(usize::MAX);
+            let end: usize = doc
+                .metadata
+                .get("end_line")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            assert!(
+                start < end || (start == 0 && end == 0),
+                "doc {} has invalid line range: {start}..{end}",
+                doc.id
+            );
+        }
+
+        // Verify source files are correctly tracked
+        let sources: std::collections::HashSet<&str> = docs
+            .iter()
+            .map(|d| d.metadata.get("source").map(|s| s.as_str()))
+            .collect::<Option<std::collections::HashSet<_>>>()
+            .unwrap();
+        assert!(sources.contains("a.rs"));
+        assert!(sources.contains("b.md"));
+        assert!(sources.contains("c.py"));
+        assert!(sources.contains("d.txt"));
+        assert!(sources.contains("e.jsonl"));
+    }
+
+    #[test]
+    fn test_batch_parallel_empty() {
+        let chunker = SmartChunker::default();
+        let docs = chunker.chunk_batch(&[]);
+        assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn test_batch_parallel_metadata_inheritance() {
+        let chunker = SmartChunker::default();
+        let files = vec![InputFile::new("hello.rs", "fn greet() {}")
+            .with_metadata("project", "dogma")
+            .with_metadata("author", "test")];
+
+        let docs = chunker.chunk_batch(&files);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(
+            docs[0].metadata.get("project").map(|s| s.as_str()),
+            Some("dogma")
+        );
+        assert_eq!(
+            docs[0].metadata.get("author").map(|s| s.as_str()),
+            Some("test")
+        );
+    }
 
     // -- FileType detection --
 
