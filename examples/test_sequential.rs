@@ -194,6 +194,12 @@ fn main() {
     for path in &files {
         // MemoryGuard periódico cada 10 archivos
         file_count += 1;
+
+        // LOG POR ARCHIVO (flush forzado para ver el último antes del crash)
+        eprintln!("  📄 [{file_count}/{}] {:?}", files.len(),
+            path.strip_prefix(&hermes_path).unwrap_or(path));
+        std::io::stderr().flush().ok();
+
         if file_count % 10 == 0 {
             eprintln!("  📊 {}/{} archivos, {} chunks, RSS: {:.1} MB",
                 file_count, files.len(), all_docs.len(),
@@ -205,13 +211,6 @@ fn main() {
                 std::io::stderr().flush().ok();
                 break;
             }
-        }
-        // Print archivos grandes para tracking
-        if file_count == 21 {
-            let sz = std::fs::metadata(path)
-                .map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
-            eprintln!("  ⏳ Procesando cli.py ({sz:.0} KB)...");
-            std::io::stderr().flush().ok();
         }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if binary_exts.contains(&ext) {
