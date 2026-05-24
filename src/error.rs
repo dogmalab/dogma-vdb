@@ -45,6 +45,9 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Out of memory: {0}")]
+    OutOfMemory(String),
 }
 
 /// Alias for `Result<T, dogma_vdb::Error>`.

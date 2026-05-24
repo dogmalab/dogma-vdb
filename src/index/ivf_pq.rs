@@ -343,6 +343,13 @@ impl IvfPqIndex {
     /// IVF-PQ rebuilds from scratch after every insert (the codebooks
     /// depend on the full dataset distribution).
     pub fn insert(&mut self, docs: &[Document]) {
+        // Memory guard antes de grandes asignaciones
+        if !docs.is_empty() {
+            if let Err(e) = crate::memory::ensure_memory() {
+                log::error!("Memory guard detuvo IvfPqIndex::insert: {e}");
+                return;
+            }
+        }
         let valid: Vec<Document> = docs
             .iter()
             .filter(|d| !d.embedding.is_empty())
@@ -359,6 +366,12 @@ impl IvfPqIndex {
     fn build_index(&mut self) {
         let n = self.documents.len();
         if n == 0 {
+            return;
+        }
+
+        // Memory guard: build_index asigna all_vecs (gran allocation)
+        if let Err(e) = crate::memory::ensure_memory() {
+            log::error!("Memory guard detuvo IvfPqIndex::build_index: {e}");
             return;
         }
 

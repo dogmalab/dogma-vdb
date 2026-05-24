@@ -106,6 +106,13 @@ impl Index for BruteForceIndex {
     }
 
     fn insert(&mut self, docs: &[Document]) {
+        // Memory guard antes de grandes asignaciones
+        if !docs.is_empty() {
+            if let Err(e) = crate::memory::ensure_memory() {
+                log::error!("Memory guard detuvo BruteForceIndex::insert: {e}");
+                return;
+            }
+        }
         // Set embedding dimension from the first document that has one
         if self.dim == 0 {
             if let Some(doc) = docs.iter().find(|d| !d.embedding.is_empty()) {

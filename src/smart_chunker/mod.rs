@@ -359,6 +359,13 @@ impl SmartChunker {
         files
             .par_chunks(batch_size)
             .flat_map(|chunk| {
+                // Memory guard: abortar si la memoria está muy baja
+                if let Err(e) = crate::memory::ensure_memory() {
+                    // No podemos retornar Err desde flat_map, así que
+                    // logueamos el error. El batch actual se omite.
+                    log::error!("Memory guard detuvo chunk_batch: {e}");
+                    return Vec::new();
+                }
                 let mut batch_docs = Vec::with_capacity(chunk.len() * 4);
                 for f in chunk {
                     let file_type = FileType::from_path(&f.path);

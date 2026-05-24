@@ -267,6 +267,13 @@ impl HnswIndex {
     /// documents (existing + new), and all embeddings are re‑quantised
     /// after insertion — identical strategy to [`BruteForceIndex`].
     pub fn insert(&mut self, docs: &[Document]) {
+        // Memory guard antes de grandes asignaciones
+        if !docs.is_empty() {
+            if let Err(e) = crate::memory::ensure_memory() {
+                log::error!("Memory guard detuvo HnswIndex::insert: {e}");
+                return;
+            }
+        }
         for doc in docs {
             if doc.embedding.is_empty() {
                 continue;
