@@ -18,6 +18,7 @@ use dogma_vdb::index::{
 use dogma_vdb::memory;
 use dogma_vdb::smart_chunker::SmartChunker;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
@@ -188,8 +189,30 @@ fn main() {
 
     let t0 = Instant::now();
     let mut all_docs = Vec::new();
+    let mut file_count = 0u64;
     let mut skipped = 0u64;
     for path in &files {
+        // MemoryGuard periódico cada 10 archivos
+        file_count += 1;
+        if file_count % 10 == 0 {
+            eprintln!("  📊 {}/{} archivos, {} chunks, RSS: {:.1} MB",
+                file_count, files.len(), all_docs.len(),
+                rss_kb() as f64 / 1024.0);
+            std::io::stderr().flush().ok();
+            if let Err(e) = memory::ensure_memory() {
+                eprintln!("  ❌ MemoryGuard detuvo chunking en archivo {}/{}: {e}",
+                    file_count, files.len());
+                std::io::stderr().flush().ok();
+                break;
+            }
+        }
+        // Print archivos grandes para tracking
+        if file_count == 21 {
+            let sz = std::fs::metadata(path)
+                .map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
+            eprintln!("  ⏳ Procesando cli.py ({sz:.0} KB)...");
+            std::io::stderr().flush().ok();
+        }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if binary_exts.contains(&ext) {
             skipped += 1;
