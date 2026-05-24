@@ -270,7 +270,7 @@ impl HnswIndex {
         // Memory guard antes de grandes asignaciones
         if !docs.is_empty() {
             if let Err(e) = crate::memory::ensure_memory() {
-                log::error!("Memory guard detuvo HnswIndex::insert: {e}");
+                eprintln!("❌ MemoryGuard detuvo HnswIndex::insert: {e}");
                 return;
             }
         }

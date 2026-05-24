@@ -346,7 +346,7 @@ impl IvfPqIndex {
         // Memory guard antes de grandes asignaciones
         if !docs.is_empty() {
             if let Err(e) = crate::memory::ensure_memory() {
-                log::error!("Memory guard detuvo IvfPqIndex::insert: {e}");
+                eprintln!("❌ MemoryGuard detuvo IvfPqIndex::insert: {e}");
                 return;
             }
         }
@@ -371,7 +371,7 @@ impl IvfPqIndex {
 
         // Memory guard: build_index asigna all_vecs (gran allocation)
         if let Err(e) = crate::memory::ensure_memory() {
-            log::error!("Memory guard detuvo IvfPqIndex::build_index: {e}");
+            eprintln!("❌ MemoryGuard detuvo IvfPqIndex::build_index: {e}");
             return;
         }
 

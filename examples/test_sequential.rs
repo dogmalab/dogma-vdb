@@ -2,7 +2,13 @@
 //! con liberación de memoria entre cada uno y telemetría de RSS.
 //!
 //! Uso: cargo run --release --example test_sequential
+//!      RUST_LOG=info cargo run --release --example test_sequential
 //!   (con --features chunker-syntax para chunking con tree-sitter)
+
+#[cfg(target_os = "linux")]
+#[global_allocator]
+#[cfg(not(test))]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;

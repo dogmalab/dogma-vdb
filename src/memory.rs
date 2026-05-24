@@ -18,13 +18,11 @@
 
 use crate::error::{Error, Result};
 
-/// Umbral mínimo de memoria disponible antes de abortar.
-/// Por debajo de este porcentaje, las operaciones fallan con
-/// `Error::OutOfMemory`.
-const MIN_FREE_PCT: f64 = 12.0;
+/// Umbral de advertencia — por debajo se logea warning pero se continúa.
+const WARN_FREE_PCT: f64 = 25.0;
 
-/// Umbral crítico — por debajo, ni siquiera se intenta.
-const CRITICAL_FREE_PCT: f64 = 5.0;
+/// Umbral crítico — por debajo se aborta con error claro.
+const CRITICAL_FREE_PCT: f64 = 20.0;
 
 /// Resultado del chequeo de memoria.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,16 +94,16 @@ pub fn check_memory() -> Result<MemoryPressure> {
 
     if free_pct < CRITICAL_FREE_PCT {
         let pressure = MemoryPressure::Critical { free_pct, free_mb, total_mb };
-        log::error!("{}", pressure);
+        eprintln!("⚠️  {}", pressure);
         return Err(Error::OutOfMemory(format!(
             "{} — abortando para evitar OOM",
             pressure
         )));
     }
 
-    if free_pct < MIN_FREE_PCT {
+    if free_pct < WARN_FREE_PCT {
         let pressure = MemoryPressure::Low { free_pct, free_mb, total_mb };
-        log::warn!("{} — continuando con precaución", pressure);
+        eprintln!("⚠️  {} — continuando con precaución", pressure);
         Ok(pressure)
     } else {
         Ok(MemoryPressure::Normal)

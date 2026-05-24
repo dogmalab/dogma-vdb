@@ -109,7 +109,7 @@ impl Index for BruteForceIndex {
         // Memory guard antes de grandes asignaciones
         if !docs.is_empty() {
             if let Err(e) = crate::memory::ensure_memory() {
-                log::error!("Memory guard detuvo BruteForceIndex::insert: {e}");
+                eprintln!("❌ MemoryGuard detuvo BruteForceIndex::insert: {e}");
                 return;
             }
         }
