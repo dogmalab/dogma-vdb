@@ -71,7 +71,10 @@ mod tests {
     fn test_adapter_reorders() {
         let adapter = DogmaRerankerAdapter::new(Box::new(StubReranker));
         let mut docs = vec![
-            make_doc("long", "this is a very long document that should score lower"),
+            make_doc(
+                "long",
+                "this is a very long document that should score lower",
+            ),
             make_doc("short", "short text"),
             make_doc("medium", "medium length text here"),
         ];

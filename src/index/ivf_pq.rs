@@ -78,9 +78,7 @@ impl IvfPqConfig {
     /// - `m_subspaces` is not a multiple of 8 (SIMD alignment).
     pub fn validate(&self) -> Result<()> {
         if self.m_subspaces == 0 {
-            return Err(Error::InvalidConfig(
-                "m_subspaces must be > 0".into(),
-            ));
+            return Err(Error::InvalidConfig("m_subspaces must be > 0".into()));
         }
         if self.m_subspaces % 8 != 0 {
             return Err(Error::InvalidConfig(format!(
@@ -448,9 +446,18 @@ impl IvfPqIndex {
     ///
     /// 1. Finds the `probe` closest IVF centroids.
     /// 2. Pre‑computes PQ lookup tables for the query.
-    /// 3. Scans all candidates via table look‑ups.
-    /// 4. Global sort → top‑k.
+    /// 3. Scans all candidates via table look‑ups (lightweight `CandidateResult`).
+    /// 4. Global sort → top‑k → hydrate into `ScoredDocument`.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<ScoredDocument> {
+        /// Lightweight intermediate result — avoids cloning heavy `Document`
+        /// during the parallel cluster scan.  Hydrated to `ScoredDocument`
+        /// only for the final top‑k.
+        #[derive(Debug, Clone)]
+        struct CandidateResult {
+            doc_id: usize,
+            score: f32,
+        }
+
         if self.documents.is_empty() || k == 0 {
             return Vec::new();
         }
@@ -494,20 +501,18 @@ impl IvfPqIndex {
             })
             .collect();
 
-        // 3. Scan docs in selected clusters
-        let mut results: Vec<ScoredDocument> = active_clusters
+        // 3. Scan docs in selected clusters — lightweight CandidateResult,
+        //    NO Document cloning inside the parallel pipeline.
+        let mut results: Vec<CandidateResult> = active_clusters
             .par_iter()
             .flat_map(|&ci| {
                 let cluster = &self.clusters[ci];
-                let mut local: Vec<ScoredDocument> = cluster
+                let mut local: Vec<CandidateResult> = cluster
                     .iter()
                     .map(|&doc_id| {
                         let code = &self.codes[doc_id];
                         let score: f32 = (0..m).map(|s| luts[s][code[s] as usize]).sum();
-                        ScoredDocument {
-                            score,
-                            document: self.documents[doc_id].clone(),
-                        }
+                        CandidateResult { doc_id, score }
                     })
                     .collect();
                 local.sort_unstable_by(|a, b| {
@@ -517,10 +522,18 @@ impl IvfPqIndex {
             })
             .collect();
 
-        // 4. Global sort & truncate
+        // 4. Global sort & truncate (still CandidateResult)
         results.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         results.truncate(k);
+
+        // 5. Hydrate: clone Document only for the final top‑k
         results
+            .into_iter()
+            .map(|c| ScoredDocument {
+                score: c.score,
+                document: self.documents[c.doc_id].clone(),
+            })
+            .collect()
     }
 }
 
@@ -763,7 +776,11 @@ mod tests {
                 m_subspaces: valid,
                 ..Default::default()
             };
-            assert!(cfg.validate().is_ok(), "m_subspaces={} should be valid", valid);
+            assert!(
+                cfg.validate().is_ok(),
+                "m_subspaces={} should be valid",
+                valid
+            );
         }
     }
 
@@ -812,10 +829,7 @@ mod tests {
             !results_low.is_empty(),
             "low probe should still return results"
         );
-        assert!(
-            !results_high.is_empty(),
-            "high probe should return results"
-        );
+        assert!(!results_high.is_empty(), "high probe should return results");
 
         // The score of the top result with high probe should be at least
         // as high (better) as the top result with low probe

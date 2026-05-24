@@ -190,7 +190,7 @@ mod tests {
     fn test_dot_i8_basic() {
         let a = vec![1i8, 2, 3];
         let b = vec![4i8, 5, 6];
-        assert_eq!(dot_i8(&a, &b), 1 * 4 + 2 * 5 + 3 * 6);
+        assert_eq!(dot_i8(&a, &b), 4 + 10 + 18);
     }
 
     #[test]

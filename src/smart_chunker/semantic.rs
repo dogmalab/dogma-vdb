@@ -205,7 +205,11 @@ mod tests {
         let text = "First sentence here. Second follows. Third continues. Now a big shift. Totally different topic.";
         let chunks = chunker.chunk(text, 9999);
 
-        assert!(chunks.len() >= 2, "expected 2+ chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "expected 2+ chunks, got {}",
+            chunks.len()
+        );
         // First 3 sentences should be in chunk 0
         assert!(chunks[0].text.contains("First"));
         assert!(chunks[0].text.contains("Third"));

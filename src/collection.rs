@@ -35,7 +35,6 @@ pub struct Collection {
     storage: BinStorage,
     index: Box<dyn Index>,
     /// Zero-copy embedding storage (mmap or memory-backed).
-    #[allow(dead_code)]
     emb_storage: Option<Arc<dyn VectorStorage>>,
 }
 
@@ -65,9 +64,7 @@ impl Collection {
                     m_subspaces: cfg.ivf_pq_n_subvectors,
                     n_probe: cfg.ivf_pq_n_probe,
                     metric,
-                    rerank_enabled: std::env::var("DOGMA_RERANK")
-                        .as_deref()
-                        == Ok("1"),
+                    rerank_enabled: std::env::var("DOGMA_RERANK").as_deref() == Ok("1"),
                 };
                 ivf_cfg.validate()?;
                 Box::new(IvfPqIndex::new(ivf_cfg))
@@ -106,9 +103,7 @@ impl Collection {
                     m_subspaces: cfg.ivf_pq_n_subvectors,
                     n_probe: cfg.ivf_pq_n_probe,
                     metric,
-                    rerank_enabled: std::env::var("DOGMA_RERANK")
-                        .as_deref()
-                        == Ok("1"),
+                    rerank_enabled: std::env::var("DOGMA_RERANK").as_deref() == Ok("1"),
                 };
                 ivf_cfg.validate()?;
                 Box::new(IvfPqIndex::new(ivf_cfg))
@@ -310,6 +305,14 @@ impl Collection {
         self.storage.path()
     }
 
+    /// Access the zero-copy embedding storage, if available.
+    ///
+    /// Returns `None` when the collection is memory-backed (volatile)
+    /// or the binary storage file doesn't exist yet.
+    pub fn embedding_storage(&self) -> Option<&Arc<dyn VectorStorage>> {
+        self.emb_storage.as_ref()
+    }
+
     /// Export the collection to a JSONL file for debugging / inspection.
     ///
     /// The exported file can be inspected with `cat`, `grep`, `sed`,
@@ -318,6 +321,86 @@ impl Collection {
     pub fn export_jsonl(&self, path: impl Into<std::path::PathBuf>) -> Result<()> {
         let jsonl = crate::storage::JsonlStorage::new(path);
         jsonl.store(self.index.documents())
+    }
+
+    /// Execute a hybrid search combining vector similarity and BM25 text search.
+    ///
+    /// The pipeline follows the configured [`PerformanceProfile`]:
+    ///
+    /// 1. **Extract** — retrieve `3 * top_k` candidates from each active engine.
+    /// 2. **Fuse** — if both engines are active, apply RRF and keep `2 * top_k`.
+    /// 3. **Rerank** — if a reranker is provided and the profile enables it,
+    ///    reorder the candidates.  Otherwise truncate directly to `top_k`.
+    pub fn hybrid_search(
+        &self,
+        query_vec: &[f32],
+        query_text: &str,
+        bm25: Option<&crate::index::bm25::Bm25Index>,
+        reranker: Option<&dyn crate::rerank::Reranker>,
+        pipeline: &crate::config::QueryPipelineConfig,
+    ) -> Vec<ScoredDocument> {
+        let top_k = pipeline.top_k.max(1);
+        let mul = pipeline.candidate_multiplier();
+
+        let vec_results = self.index.search(query_vec, top_k * mul);
+        let bm25_results: Vec<(usize, f32)> = if pipeline.use_bm25() {
+            bm25.map(|b| b.search(query_text, top_k * mul))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Fuse vector + BM25 results into lightweight (doc_index, score) pairs
+        let fused: Vec<(usize, f32)> = if pipeline.use_bm25() && !bm25_results.is_empty() {
+            let vec_ids: Vec<(usize, f32)> = vec_results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (i, r.score))
+                .collect();
+            crate::index::rrf::fuse(&vec_ids, &bm25_results, top_k * 2)
+        } else {
+            let mut v: Vec<(usize, f32)> = vec_results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (i, r.score))
+                .collect();
+            v.truncate(top_k * 2);
+            v
+        };
+
+        if pipeline.use_reranker() {
+            if let Some(rank) = reranker {
+                let mut docs: Vec<Document> = fused
+                    .iter()
+                    .map(|&(id, _)| self.index.documents()[id].clone())
+                    .collect();
+                if rank.rerank(query_text, &mut docs).is_ok() {
+                    // Reuse the reranker's output Vec — no second clone
+                    return docs
+                        .into_iter()
+                        .map(|d| ScoredDocument {
+                            score: 0.0,
+                            document: d,
+                        })
+                        .collect();
+                }
+            }
+        }
+
+        // Without reranker: sort fused, truncate, then hydrate only top-k
+        let mut fused = fused;
+        fused.sort_unstable_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        fused.truncate(top_k);
+        fused
+            .into_iter()
+            .map(|(id, score)| ScoredDocument {
+                score,
+                document: self.index.documents()[id].clone(),
+            })
+            .collect()
     }
 }
 
@@ -632,5 +715,94 @@ mod tests {
             doc.metadata_val("lang").is_some()
         });
         assert!(results.is_empty());
+    }
+
+    // ── Hybrid search tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_hybrid_pipeline_precision_local() {
+        use crate::config::{PerformanceProfile, QueryPipelineConfig};
+        use crate::index::bm25::Bm25Index;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut col =
+            Collection::open_with(dir.path().join("h.vdb"), "bruteforce", "cosine").unwrap();
+        col.insert(
+            Document::builder("a", "fn chunk_batch does parallel chunking")
+                .embedding(vec![1.0, 0.0])
+                .build(),
+        )
+        .unwrap();
+        col.insert(
+            Document::builder("b", "fn bake_cake makes a delicious cake")
+                .embedding(vec![0.0, 1.0])
+                .build(),
+        )
+        .unwrap();
+
+        let mut bm25 = Bm25Index::new();
+        for (i, d) in col.index.documents().iter().enumerate() {
+            bm25.insert(i, &d.text);
+        }
+
+        let cfg = QueryPipelineConfig {
+            profile: PerformanceProfile::PrecisionLocal,
+            top_k: 5,
+        };
+
+        let results = col.hybrid_search(&[1.0, 0.0], "chunk_batch", Some(&bm25), None, &cfg);
+        assert!(!results.is_empty(), "hybrid search should return results");
+        assert_eq!(
+            results[0].document.id, "a",
+            "RRF fusion should rank 'chunk_batch' doc first when query matches text exactly"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_profile_behavior() {
+        use crate::config::{PerformanceProfile, QueryPipelineConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let col = Collection::open_with(dir.path().join("p.vdb"), "bruteforce", "cosine").unwrap();
+        // No documents — but we can still test that the profile dispatch works
+
+        let cfg_fast = QueryPipelineConfig {
+            profile: PerformanceProfile::VelocidadExtrema,
+            top_k: 3,
+        };
+
+        // VelocidadExtrema: BM25 inactive → empty BM25 results
+        let results = col.hybrid_search(&[1.0, 0.0], "anything", None, None, &cfg_fast);
+        assert!(
+            results.is_empty(),
+            "empty collection with VelocidadExtrema returns empty"
+        );
+
+        // Verify profile flags
+        assert!(!cfg_fast.use_bm25(), "VelocidadExtrema should not use BM25");
+        assert!(
+            !cfg_fast.use_reranker(),
+            "VelocidadExtrema should not use reranker"
+        );
+
+        let cfg_precision = QueryPipelineConfig {
+            profile: PerformanceProfile::PrecisionLocal,
+            top_k: 3,
+        };
+        assert!(cfg_precision.use_bm25(), "PrecisionLocal should use BM25");
+        assert!(
+            cfg_precision.use_reranker(),
+            "PrecisionLocal should use reranker"
+        );
+
+        let cfg_hibrido = QueryPipelineConfig {
+            profile: PerformanceProfile::ProduccionHibrido,
+            top_k: 3,
+        };
+        assert!(cfg_hibrido.use_bm25(), "ProduccionHibrido should use BM25");
+        assert!(
+            cfg_hibrido.use_reranker(),
+            "ProduccionHibrido should use reranker"
+        );
     }
 }

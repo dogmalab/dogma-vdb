@@ -68,6 +68,7 @@ tree-sitter-go           = { version = "0.21", optional = true }
 tempfile    = "3"
 criterion   = { version = "0.5", features = ["html_reports"] }
 anyhow      = "1"
+tikv-jemallocator = "0.6"
 
 [[bench]]
 name = "benchmarks"
@@ -87,4 +88,5 @@ members = [
     "dogma-vdb-embed",
     "dogma-vdb-embed-fastembed",
     "dogma-vdb-rerank",
+    "benchmarks",
 ]

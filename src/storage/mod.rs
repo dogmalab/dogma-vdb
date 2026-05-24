@@ -124,8 +124,9 @@ impl BinStorage {
         let _version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let dim = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
         let count = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize;
-        let emb_offset =
-            u64::from_le_bytes([buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23]]);
+        let emb_offset = u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]);
         let emb_len = count * dim * 4;
         Ok((emb_offset, emb_len, dim, count))
     }
@@ -422,7 +423,7 @@ mod tests {
         let storage = BinStorage::new(&path);
 
         storage
-            .store(&vec![
+            .store(&[
                 Document::new("a", "text"),
                 Document::builder("b", "emb").embedding(vec![1.0]).build(),
             ])

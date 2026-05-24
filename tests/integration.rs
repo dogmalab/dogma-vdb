@@ -123,7 +123,7 @@ fn test_chunker_integration() {
 
     let long_text = "line 1\nline 2\nline 3\nline 4\nline 5\n";
     let chunks = chunker.chunk(long_text);
-    assert!(chunks.len() >= 1);
+    assert!(!chunks.is_empty());
 
     let docs = chunker.chunk_to_docs(long_text, "section", std::collections::HashMap::new());
     assert_eq!(docs.len(), chunks.len());

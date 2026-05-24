@@ -1,15 +1,20 @@
 //! Vector index trait and implementations.
 //!
-//! Three backends are provided:
+//! Five backends / modules are provided:
 //! - [`BruteForceIndex`] — precise, O(n·d) linear scan
 //! - [`HnswIndex`] — approximate, O(log n) via hierarchical graph
 //! - [`IvfPqIndex`] — approximate, via IVF + Product Quantisation
+//! - [`bm25`] — lightweight BM25 text search
+//! - [`rrf`] — Reciprocal Rank Fusion for hybrid search
 
 mod brute_force;
 mod hnsw;
 mod ivf_pq;
 pub(crate) mod ivf_pq_persistence;
 mod sq;
+
+pub mod bm25;
+pub mod rrf;
 
 pub use brute_force::BruteForceIndex;
 pub use hnsw::{HnswConfig, HnswIndex};

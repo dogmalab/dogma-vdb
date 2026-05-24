@@ -311,10 +311,9 @@ impl HnswIndex {
             None => return Vec::new(),
         };
 
-        if self.config.sq {
-            // Quantize query ONCE, use i8 path for all layer traversals
+        // Collect lightweight Candidate { node, score } — no Document clones
+        let mut candidates: Vec<Candidate> = if self.config.sq {
             let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
-
             let top_layer = self.graphs.len().saturating_sub(1);
             let mut ep = ep;
             for layer in (1..=top_layer).rev() {
@@ -323,35 +322,7 @@ impl HnswIndex {
                     ep = best.node;
                 }
             }
-
-            let candidates = self.search_layer_i8(&query_i8, ep, ef, 0);
-
-            let take_n = if self.config.sq_rescore {
-                (k * 5).max(self.config.ef_search)
-            } else {
-                k
-            };
-            let mut scored: Vec<ScoredDocument> = candidates
-                .into_iter()
-                .take(take_n)
-                .map(|c| ScoredDocument {
-                    score: c.score,
-                    document: self.documents[c.node].clone(),
-                })
-                .collect();
-
-            if self.config.sq_rescore {
-                let rescore_k = (k * 2).min(scored.len());
-                for r in &mut scored[..rescore_k] {
-                    r.score = distance::score(&r.document.embedding, query, self.config.metric);
-                }
-                scored[..rescore_k]
-                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-            } else {
-                scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-            }
-            scored.truncate(k);
-            scored
+            self.search_layer_i8(&query_i8, ep, ef, 0)
         } else {
             let top_layer = self.graphs.len().saturating_sub(1);
             let mut ep = ep;
@@ -361,23 +332,38 @@ impl HnswIndex {
                     ep = best.node;
                 }
             }
+            self.search_layer(query, ep, ef, 0)
+        };
 
-            let candidates = self.search_layer(query, ep, ef, 0);
+        let take_n = if self.config.sq {
+            (k * 5).max(self.config.ef_search)
+        } else {
+            k
+        };
 
-            let take_n = k;
-            let mut scored: Vec<ScoredDocument> = candidates
-                .into_iter()
-                .take(take_n)
-                .map(|c| ScoredDocument {
-                    score: c.score,
-                    document: self.documents[c.node].clone(),
-                })
-                .collect();
+        // Sort by score descending and truncate candidate pool
+        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        candidates.truncate(take_n);
 
-            scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-            scored.truncate(k);
-            scored
+        // SQ rescore on the truncated candidates (if enabled)
+        if self.config.sq_rescore {
+            let rescore_k = (k * 2).min(candidates.len());
+            for c in &mut candidates[..rescore_k] {
+                c.score = distance::score(&self.documents[c.node].embedding, query, self.config.metric);
+            }
+            candidates[..rescore_k]
+                .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
+
+        // Hydrate only top-k — clone Document for k items, not take_n
+        candidates.truncate(k);
+        candidates
+            .into_iter()
+            .map(|c| ScoredDocument {
+                score: c.score,
+                document: self.documents[c.node].clone(),
+            })
+            .collect()
     }
 
     // ------------------------------------------------------------------

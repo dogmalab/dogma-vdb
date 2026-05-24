@@ -201,7 +201,7 @@ impl WatcherState {
             if !dir.exists() {
                 continue;
             }
-            walkdir(dir, &self.config.extensions, |path| {
+            walkdir(dir, &self.config.extensions, &mut |path| {
                 self.process_file(path);
             });
         }
@@ -218,7 +218,7 @@ impl WatcherState {
 }
 
 /// Walk a directory recursively, calling `f` for each matching file.
-fn walkdir(dir: &Path, extensions: &[String], mut f: impl FnMut(&Path)) {
+fn walkdir(dir: &Path, extensions: &[String], f: &mut dyn FnMut(&Path)) {
     if !dir.is_dir() {
         return;
     }
@@ -229,7 +229,7 @@ fn walkdir(dir: &Path, extensions: &[String], mut f: impl FnMut(&Path)) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walkdir(&path, extensions, &mut f);
+            walkdir(&path, extensions, f);
         } else if path.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if extensions.is_empty() || extensions.iter().any(|e| e == ext) {

@@ -229,7 +229,7 @@ mod tests {
         meta.insert("source".into(), "test".into());
 
         let docs = chunker.chunk_to_docs(text, "doc", meta);
-        assert!(docs.len() >= 1);
+        assert!(!docs.is_empty());
         for doc in &docs {
             assert!(doc.id.starts_with("doc-"));
             assert_eq!(doc.metadata_val("source"), Some("test"));

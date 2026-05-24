@@ -195,11 +195,7 @@ impl VdbServer {
 
         // Stage 2: reranking (Cross-Encoder) if enabled
         if params.rerank {
-            let query_text = params
-                .query_text
-                .as_deref()
-                .unwrap_or("")
-                .to_string();
+            let query_text = params.query_text.as_deref().unwrap_or("").to_string();
             if query_text.is_empty() {
                 return Err("rerank requires 'query_text' parameter".into());
             }
@@ -377,12 +373,9 @@ async fn main() -> anyhow::Result<()> {
 
         match dogma_vdb_rerank::OnnxReranker::new(&model_path, &tokenizer_path, 512, 2) {
             Ok(onnx) => {
-                let reranker =
-                    rerank_adapter::DogmaRerankerAdapter::new(Box::new(onnx));
+                let reranker = rerank_adapter::DogmaRerankerAdapter::new(Box::new(onnx));
                 let _ = RERANKER.set(reranker);
-                tracing::info!(
-                    "Reranker initialised (OnnxReranker, model={model_path})"
-                );
+                tracing::info!("Reranker initialised (OnnxReranker, model={model_path})");
             }
             Err(e) => {
                 let reranker = rerank_adapter::DogmaRerankerAdapter::new(Box::new(

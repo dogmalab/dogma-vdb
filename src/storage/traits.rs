@@ -50,9 +50,13 @@ pub trait VectorStorage: Send + Sync {
         // above ensures the pointer meets f32 requirements.
         // This is the standard pattern used by safetensors (HF) and the
         // `bytemuck` crate.
-        unsafe {
-            std::slice::from_raw_parts(ptr as *const f32, bytes.len() / 4)
-        }
+        assert_eq!(
+            bytes.len() % 4,
+            0,
+            "VectorStorage: byte length {} must be multiple of 4",
+            bytes.len()
+        );
+        unsafe { std::slice::from_raw_parts(ptr as *const f32, bytes.len() / 4) }
     }
 
     /// Persist changes to disk (no-op for memory-backed storage).
@@ -82,6 +86,12 @@ pub struct MemoryBackedStorage {
 
 impl MemoryBackedStorage {
     pub fn new(data: Vec<u8>) -> Self {
+        debug_assert_eq!(
+            data.len() % 4,
+            0,
+            "MemoryBackedStorage data length must be multiple of 4, got {}",
+            data.len()
+        );
         Self { data }
     }
 
@@ -139,13 +149,13 @@ impl MmapBackedStorage {
             path: path.as_ref().to_path_buf(),
             source: e,
         })?;
-        // Safety: read-only mapping, file not modified while mapped.
-        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| {
-            crate::error::Error::Io {
-                path: path.as_ref().to_path_buf(),
-                source: e,
-            }
+        // SAFETY: read-only mapping, file not modified while mapped.
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| crate::error::Error::Io {
+            path: path.as_ref().to_path_buf(),
+            source: e,
         })?;
+        // Hint: random access pattern — no readahead, no page-clustering
+        let _ = mmap.advise(memmap2::Advice::Random);
         Ok(Self { _file: file, mmap })
     }
 
@@ -162,7 +172,7 @@ impl MmapBackedStorage {
             path: path.as_ref().to_path_buf(),
             source: e,
         })?;
-        // Safety: mmap with explicit offset/len requires offset to be
+        // SAFETY: mmap with explicit offset/len requires offset to be
         // page-aligned.  The caller is responsible for this guarantee.
         let mmap = unsafe {
             memmap2::MmapOptions::new()
@@ -174,6 +184,8 @@ impl MmapBackedStorage {
             path: path.as_ref().to_path_buf(),
             source: e,
         })?;
+        // Hint: random access pattern — no readahead, no page-clustering
+        let _ = mmap.advise(memmap2::Advice::Random);
         Ok(Self { _file: file, mmap })
     }
 
@@ -197,8 +209,8 @@ impl VectorStorage for MmapBackedStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::BinStorage;
     use crate::doc::Document;
+    use crate::storage::BinStorage;
     use tempfile::tempdir;
 
     #[test]

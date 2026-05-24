@@ -1,0 +1,21 @@
+[
+  {
+    "build_time_s": 0.122305126,
+    "dim": 384,
+    "index_throughput": 817627.218666207,
+    "label": "BF",
+    "latency_max_us": 353105.475,
+    "latency_mean_us": 212133.05485999986,
+    "latency_min_us": 181906.757,
+    "latency_p50_us": 202387.6,
+    "latency_p95_us": 280126.213,
+    "latency_p99_us": 353105.475,
+    "metric": "Cosine",
+    "n": 100000,
+    "peak_ram_mb": 165.5546875,
+    "qps": 4.714010960736105,
+    "recall_k1": 1.0,
+    "recall_k10": 1.0,
+    "recall_k100": 1.0
+  }
+]

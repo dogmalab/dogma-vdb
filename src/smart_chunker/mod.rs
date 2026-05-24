@@ -348,25 +348,32 @@ impl SmartChunker {
     /// assert_eq!(docs.len(), 2); // one Python chunk + one markdown chunk
     /// ```
     pub fn chunk_batch(&self, files: &[InputFile]) -> Vec<Document> {
+        // Backpressure: limit concurrent file processing to prevent
+        // simultaneous tree-sitter AST allocations from saturating the heap.
+        // Each rayon thread processes one file at a time within its chunk.
+        // Files within a chunk are sequential; chunks run in parallel.
+        let batch_size = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+
         files
-            .par_iter()
-            .flat_map(|f| {
-                let file_type = FileType::from_path(&f.path);
-                let base_id = Path::new(&f.path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file");
-                let mut extra_meta = f.metadata.clone();
-                extra_meta.insert("source".into(), f.path.clone());
-                let file_type_name = file_type.name().to_string();
-                extra_meta.insert("language".into(), file_type_name);
+            .par_chunks(batch_size)
+            .flat_map(|chunk| {
+                let mut batch_docs = Vec::with_capacity(chunk.len() * 4);
+                for f in chunk {
+                    let file_type = FileType::from_path(&f.path);
+                    let base_id = Path::new(&f.path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("file");
+                    let mut extra_meta = f.metadata.clone();
+                    extra_meta.insert("source".into(), f.path.clone());
+                    let file_type_name = file_type.name().to_string();
+                    extra_meta.insert("language".into(), file_type_name);
 
-                let chunks = self.chunk_text(&f.text, file_type);
+                    let chunks = self.chunk_text(&f.text, file_type);
 
-                chunks
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(i, chunk)| {
+                    for (i, chunk) in chunks.into_iter().enumerate() {
                         let mut meta = extra_meta.clone();
                         if let Some(ref s) = chunk.structure {
                             meta.insert("structure".into(), s.clone());
@@ -375,11 +382,14 @@ impl SmartChunker {
                         meta.insert("start_line".into(), chunk.start_line.to_string());
                         meta.insert("end_line".into(), chunk.end_line.to_string());
 
-                        Document::builder(format!("{}-{}", base_id, i), chunk.text)
-                            .metadatas(meta)
-                            .build()
-                    })
-                    .collect::<Vec<Document>>()
+                        batch_docs.push(
+                            Document::builder(format!("{}-{}", base_id, i), chunk.text)
+                                .metadatas(meta)
+                                .build(),
+                        );
+                    }
+                }
+                batch_docs
             })
             .collect()
     }
@@ -432,10 +442,7 @@ mod tests {
         let chunker = SmartChunker::default();
         let files = vec![
             InputFile::new("a.rs", "fn hello() {}\nfn world() {}"),
-            InputFile::new(
-                "b.md",
-                "# Title\n\nParagraph one.\n\n## Sub\n\nSub text.",
-            ),
+            InputFile::new("b.md", "# Title\n\nParagraph one.\n\n## Sub\n\nSub text."),
             InputFile::new("c.py", "def a(): pass\n\ndef b(): pass\n\nclass C: pass"),
             InputFile::new("d.txt", "Just a short text."),
             InputFile::new("e.jsonl", "{\"a\":1}\n{\"b\":2}"),
@@ -711,7 +718,7 @@ mod tests {
     fn test_unknown_falls_back() {
         let chunker = SmartChunker::default();
         let chunks = chunker.chunk_text("a\n\nb\n\nc", FileType::Unknown);
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
     }
 
     // -- chunke_file auto-detect --

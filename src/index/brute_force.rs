@@ -162,88 +162,75 @@ impl Index for BruteForceIndex {
             return Vec::new();
         }
 
-        if self.sq {
-            // Quantize query ONCE
+        // Collect lightweight (doc_index, score) pairs — no Document clones
+        let mut candidates: Vec<(usize, f32)> = if self.sq {
             let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
-
-            let mut results: Vec<ScoredDocument> = self
-                .documents
+            self.documents
+                .par_iter()
+                .enumerate()
+                .filter(|(_, d)| !d.embedding.is_empty())
+                .map(|(i, _)| {
+                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
+                    (i, score)
+                })
+                .collect()
+        } else if let Some(ref storage) = self.storage {
+            let emb_all = storage.as_embeddings();
+            let dim = self.dim;
+            self.documents
+                .par_iter()
+                .enumerate()
+                .filter(|(_, d)| !d.embedding.is_empty())
+                .map(|(i, _)| {
+                    let start = i * dim;
+                    let emb = if start + dim <= emb_all.len() {
+                        &emb_all[start..start + dim]
+                    } else {
+                        &self.documents[i].embedding
+                    };
+                    let score = crate::distance::score(emb, query, self.metric);
+                    (i, score)
+                })
+                .collect()
+        } else {
+            self.documents
                 .par_iter()
                 .enumerate()
                 .filter(|(_, d)| !d.embedding.is_empty())
                 .map(|(i, d)| {
-                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
-                    ScoredDocument {
-                        score,
-                        document: d.clone(),
-                    }
+                    let score = crate::distance::score(&d.embedding, query, self.metric);
+                    (i, score)
                 })
-                .collect();
+                .collect()
+        };
 
-            results.sort_unstable_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+        // Sort by score descending
+        candidates.sort_unstable_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-            if self.sq_rescore {
-                let rescore_k = (k * 2).min(results.len());
-                for r in &mut results[..rescore_k] {
-                    r.score = crate::distance::score(&r.document.embedding, query, self.metric);
-                }
-                results[..rescore_k].sort_unstable_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+        if self.sq_rescore {
+            let rescore_k = (k * 2).min(candidates.len());
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..rescore_k {
+                let idx = candidates[i].0;
+                candidates[i].1 =
+                    crate::distance::score(&self.documents[idx].embedding, query, self.metric);
             }
-
-            results.truncate(k);
-            results
-        } else {
-            let mut results: Vec<ScoredDocument> = if let Some(ref storage) = self.storage {
-                let emb_all = storage.as_embeddings();
-                let dim = self.dim;
-                self.documents
-                    .par_iter()
-                    .enumerate()
-                    .filter(|(_, d)| !d.embedding.is_empty())
-                    .map(|(i, d)| {
-                        let start = i * dim;
-                        let emb = if start + dim <= emb_all.len() {
-                            &emb_all[start..start + dim]
-                        } else {
-                            &d.embedding
-                        };
-                        let score = crate::distance::score(emb, query, self.metric);
-                        ScoredDocument {
-                            score,
-                            document: d.clone(),
-                        }
-                    })
-                    .collect()
-            } else {
-                self.documents
-                    .par_iter()
-                    .filter(|d| !d.embedding.is_empty())
-                    .map(|d| {
-                        let score = crate::distance::score(&d.embedding, query, self.metric);
-                        ScoredDocument {
-                            score,
-                            document: d.clone(),
-                        }
-                    })
-                    .collect()
-            };
-
-            results.sort_unstable_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+            candidates[..rescore_k].sort_unstable_by(|a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
             });
-            results.truncate(k);
-            results
         }
+
+        // Hydrate only the top-k — clone Document for k items, not N
+        candidates.truncate(k);
+        candidates
+            .into_iter()
+            .map(|(i, score)| ScoredDocument {
+                score,
+                document: self.documents[i].clone(),
+            })
+            .collect()
     }
 
     fn delete(&mut self, ids: &[&str]) -> usize {
@@ -288,89 +275,77 @@ impl Index for BruteForceIndex {
             return Vec::new();
         }
 
-        if self.sq {
+        // Collect lightweight (doc_index, score) pairs — no Document clones
+        let mut candidates: Vec<(usize, f32)> = if self.sq {
             let query_i8 = index::quantize_query(query, &self.scales, &self.biases);
-            let mut results: Vec<ScoredDocument> = self
-                .documents
+            self.documents
+                .par_iter()
+                .enumerate()
+                .filter(|(_, d)| !d.embedding.is_empty())
+                .filter(|(_, d)| filter(d))
+                .map(|(i, _)| {
+                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
+                    (i, score)
+                })
+                .collect()
+        } else if let Some(ref storage) = self.storage {
+            let emb_all = storage.as_embeddings();
+            let dim = self.dim;
+            self.documents
+                .par_iter()
+                .enumerate()
+                .filter(|(_, d)| !d.embedding.is_empty())
+                .filter(|(_, d)| filter(d))
+                .map(|(i, _)| {
+                    let start = i * dim;
+                    let emb = if start + dim <= emb_all.len() {
+                        &emb_all[start..start + dim]
+                    } else {
+                        &self.documents[i].embedding
+                    };
+                    let score = crate::distance::score(emb, query, self.metric);
+                    (i, score)
+                })
+                .collect()
+        } else {
+            self.documents
                 .par_iter()
                 .enumerate()
                 .filter(|(_, d)| !d.embedding.is_empty())
                 .filter(|(_, d)| filter(d))
                 .map(|(i, d)| {
-                    let score = index::score_i8(&query_i8, &self.embedding_i8[i], self.metric);
-                    ScoredDocument {
-                        score,
-                        document: d.clone(),
-                    }
+                    let score = crate::distance::score(&d.embedding, query, self.metric);
+                    (i, score)
                 })
-                .collect();
+                .collect()
+        };
 
-            results.sort_unstable_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+        // Sort by score descending
+        candidates
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            if self.sq_rescore {
-                let rescore_k = (k * 2).min(results.len());
-                for r in &mut results[..rescore_k] {
-                    r.score = crate::distance::score(&r.document.embedding, query, self.metric);
-                }
-                results[..rescore_k].sort_unstable_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+        if self.sq_rescore {
+            let rescore_k = (k * 2).min(candidates.len());
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..rescore_k {
+                let idx = candidates[i].0;
+                candidates[i].1 =
+                    crate::distance::score(&self.documents[idx].embedding, query, self.metric);
             }
-
-            results.truncate(k);
-            results
-        } else {
-            let mut results: Vec<ScoredDocument> = if let Some(ref storage) = self.storage {
-                let emb_all = storage.as_embeddings();
-                let dim = self.dim;
-                self.documents
-                    .par_iter()
-                    .enumerate()
-                    .filter(|(_, d)| !d.embedding.is_empty())
-                    .filter(|(_, d)| filter(d))
-                    .map(|(i, d)| {
-                        let start = i * dim;
-                        let emb = if start + dim <= emb_all.len() {
-                            &emb_all[start..start + dim]
-                        } else {
-                            &d.embedding
-                        };
-                        let score = crate::distance::score(emb, query, self.metric);
-                        ScoredDocument {
-                            score,
-                            document: d.clone(),
-                        }
-                    })
-                    .collect()
-            } else {
-                self.documents
-                    .par_iter()
-                    .filter(|d| !d.embedding.is_empty())
-                    .filter(|d| filter(d))
-                    .map(|d| {
-                        let score = crate::distance::score(&d.embedding, query, self.metric);
-                        ScoredDocument {
-                            score,
-                            document: d.clone(),
-                        }
-                    })
-                    .collect()
-            };
-
-            results.sort_unstable_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+            candidates[..rescore_k].sort_unstable_by(|a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
             });
-            results.truncate(k);
-            results
         }
+
+        // Hydrate only the top-k — clone Document for k items, not N
+        candidates.truncate(k);
+        candidates
+            .into_iter()
+            .map(|(i, score)| ScoredDocument {
+                score,
+                document: self.documents[i].clone(),
+            })
+            .collect()
     }
 
     fn len(&self) -> usize {

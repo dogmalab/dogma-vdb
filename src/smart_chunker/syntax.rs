@@ -7,6 +7,7 @@
 //! parsing fails or the language has no grammar loaded.
 
 use crate::smart_chunker::{subdivide_by_lines, FileType, SmartChunk};
+use std::sync::Mutex;
 use tree_sitter::{Node, Parser, TreeCursor};
 
 // ---------------------------------------------------------------------------
@@ -60,14 +61,25 @@ const GO_DEFS: &[DefSpec] = &[
 /// Uses tree‑sitter parsers to locate top‑level definitions with exact
 /// line ranges and precise names.
 pub struct SyntaxChunker {
-    rust: Parser,
-    python: Parser,
-    javascript: Parser,
-    go: Parser,
+    rust: Mutex<Parser>,
+    python: Mutex<Parser>,
+    javascript: Mutex<Parser>,
+    go: Mutex<Parser>,
     rust_defs: std::collections::HashSet<&'static str>,
     py_defs: std::collections::HashSet<&'static str>,
     js_defs: std::collections::HashSet<&'static str>,
     go_defs: std::collections::HashSet<&'static str>,
+}
+
+impl std::fmt::Debug for SyntaxChunker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyntaxChunker")
+            .field("rust_defs", &self.rust_defs)
+            .field("py_defs", &self.py_defs)
+            .field("js_defs", &self.js_defs)
+            .field("go_defs", &self.go_defs)
+            .finish()
+    }
 }
 
 impl SyntaxChunker {
@@ -84,10 +96,10 @@ impl SyntaxChunker {
 
         let to_set = |specs: &[DefSpec]| specs.iter().map(|(k, _)| *k).collect();
         Ok(Self {
-            rust,
-            python,
-            javascript,
-            go,
+            rust: Mutex::new(rust),
+            python: Mutex::new(python),
+            javascript: Mutex::new(javascript),
+            go: Mutex::new(go),
             rust_defs: to_set(RUST_DEFS),
             py_defs: to_set(PYTHON_DEFS),
             js_defs: to_set(JS_DEFS),
@@ -108,7 +120,7 @@ impl SyntaxChunker {
             _ => return vec![],
         };
 
-        let tree = match parser.parse(text, None) {
+        let tree = match parser.lock().unwrap().parse(text, None) {
             Some(t) => t,
             None => return vec![],
         };
