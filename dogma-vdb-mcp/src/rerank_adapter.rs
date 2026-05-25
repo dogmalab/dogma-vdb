@@ -35,7 +35,7 @@ impl Reranker for DogmaRerankerAdapter {
         let ranked = self
             .inner
             .compute_scores(query, &texts)
-            .map_err(|e| dogma_vdb::error::Error::Embedding(e.to_string()))?;
+            .map_err(|e| dogma_vdb::error::Error::Internal(format!("rerank scoring: {}", e)))?;
 
         // 3. Reorder the documents in place
         let mut ordered = Vec::with_capacity(documents.len());

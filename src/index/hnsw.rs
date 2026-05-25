@@ -247,13 +247,6 @@ impl HnswIndex {
         index::score_i8(query_i8, &self.embedding_i8[node_id], self.config.metric)
     }
 
-    /// Return the distance between two indexed nodes.
-    #[inline]
-    #[allow(dead_code)]
-    fn score_between(&self, a: usize, b: usize) -> f32 {
-        distance::score(self.embedding(a), self.embedding(b), self.config.metric)
-    }
-
     // ------------------------------------------------------------------
     // Public API — insert & search
     // ------------------------------------------------------------------

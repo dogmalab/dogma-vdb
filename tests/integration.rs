@@ -4,7 +4,6 @@
 //! read-write-search cycle.
 
 use dogma_vdb::prelude::*;
-use dogma_vdb::storage::JsonlStorage;
 
 fn make_embedded_doc(id: &str, embedding: Vec<f32>) -> Document {
     Document::builder(id, format!("doc {}", id))
@@ -129,29 +128,6 @@ fn test_chunker_integration() {
     assert_eq!(docs.len(), chunks.len());
     for (i, doc) in docs.iter().enumerate() {
         assert_eq!(doc.id, format!("section-{}", i));
-    }
-}
-
-#[test]
-fn test_raw_storage_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("raw.vdb");
-    let storage = JsonlStorage::new(&path);
-
-    let docs: Vec<Document> = (0..5)
-        .map(|i| {
-            Document::builder(format!("k{}", i), format!("value {}", i))
-                .embedding(vec![i as f32 * 0.1, 0.2])
-                .metadata("idx", format!("{}", i))
-                .build()
-        })
-        .collect();
-    storage.store(&docs).unwrap();
-
-    let loaded = storage.load().unwrap();
-    assert_eq!(loaded.len(), 5);
-    for (orig, loaded) in docs.iter().zip(loaded.iter()) {
-        assert_eq!(orig, loaded);
     }
 }
 

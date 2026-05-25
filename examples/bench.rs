@@ -15,7 +15,7 @@ use dogma_vdb::index::{
     BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
 };
 #[cfg(feature = "chunker-syntax")]
-use dogma_vdb::smart_chunker::{FileType, SmartChunker};
+use dogma_vdb::smart_chunker::{ChunkStrategy, SmartChunker};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -350,14 +350,14 @@ fn bench_treesitter_chunking() {
     let chunker = SmartChunker::default();
 
     // Warmup
-    let _ = chunker.chunk_text(&all_code, FileType::Rust);
+    let _ = chunker.chunk_text(&all_code, ChunkStrategy::Code);
 
     // Measure chunking
     const ITERS: usize = 20;
     let start = Instant::now();
     let mut total_chunks = 0usize;
     for _ in 0..ITERS {
-        total_chunks += chunker.chunk_text(&all_code, FileType::Rust).len();
+        total_chunks += chunker.chunk_text(&all_code, ChunkStrategy::Code).len();
     }
     let elapsed = start.elapsed();
     let per_iter = elapsed / ITERS as u32;

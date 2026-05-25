@@ -124,7 +124,14 @@ fn paragraph_fallback(text: &str, max_size: usize) -> Vec<SmartChunk> {
             });
             break;
         }
-        let ideal = start + max_size;
+        let raw_ideal = start + max_size;
+        let ideal = if text.is_char_boundary(raw_ideal) {
+            raw_ideal
+        } else {
+            (start..raw_ideal)
+                .rfind(|&i| text.is_char_boundary(i))
+                .unwrap_or(raw_ideal)
+        };
         let end = text[start..ideal]
             .rfind("\n\n")
             .map(|p| start + p + 2)

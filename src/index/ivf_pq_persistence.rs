@@ -449,14 +449,6 @@ mod tests {
     use crate::index::ivf_pq::IvfPqConfig;
     use tempfile::TempDir;
 
-    #[allow(dead_code)]
-    fn make_doc(id: &str, dim: usize) -> Document {
-        let emb: Vec<f32> = (0..dim).map(|i| (i as f32 + 1.0) / dim as f32).collect();
-        Document::builder(id, format!("doc {id}"))
-            .embedding(emb)
-            .build()
-    }
-
     fn make_test_docs(n: usize, dim: usize) -> Vec<Document> {
         let mut seed = 42u64;
         (0..n)

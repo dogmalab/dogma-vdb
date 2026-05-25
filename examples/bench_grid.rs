@@ -21,6 +21,9 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 // ============================================================================
 // Configuracion del Grid
 // ============================================================================
@@ -667,7 +670,7 @@ fn result_to_json(r: &IndexResult, n: usize, dim: usize, metric: Metric) -> serd
 
 #[cfg(feature = "chunker-syntax")]
 fn bench_chunking() -> (f64, f64, u64) {
-    use dogma_vdb::smart_chunker::{FileType, SmartChunker};
+    use dogma_vdb::smart_chunker::{ChunkStrategy, SmartChunker};
     use std::path::Path;
 
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -693,13 +696,13 @@ fn bench_chunking() -> (f64, f64, u64) {
     collect(&src_dir, &mut all_code, &mut total_bytes);
 
     let chunker = SmartChunker::default();
-    let _ = chunker.chunk_text(&all_code, FileType::Rust);
+    let _ = chunker.chunk_text(&all_code, ChunkStrategy::Code);
 
     let iters = 20;
     let start = Instant::now();
     let mut total_chunks = 0usize;
     for _ in 0..iters {
-        total_chunks += chunker.chunk_text(&all_code, FileType::Rust).len();
+        total_chunks += chunker.chunk_text(&all_code, ChunkStrategy::Code).len();
     }
     let elapsed = start.elapsed();
     let mb_per_sec = (total_bytes as f64 * iters as f64) / elapsed.as_secs_f64() / 1024.0 / 1024.0;
@@ -717,6 +720,15 @@ fn bench_chunking() -> (f64, f64, u64) {
 // ============================================================================
 
 fn main() {
+    // ── Rayon backpressure: half of logical cores ──
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((cpus / 2).max(1))
+        .build_global()
+        .unwrap_or(());
+
     let json_path = Path::new("bench_results.json");
 
     let quick = std::env::args().any(|a| a == "--quick");
@@ -789,6 +801,8 @@ fn main() {
                 bf.insert(&data.docs);
                 let exact_results: Vec<_> =
                     data.queries.iter().map(|q| bf.search(q, 100)).collect();
+                // BF ground truth ya no se necesita — los resultados están en exact_results
+                drop(bf);
                 eprintln!("  Done.");
 
                 let ctx = BenchContext {

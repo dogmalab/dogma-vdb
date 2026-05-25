@@ -122,16 +122,6 @@ impl Collection {
             .unwrap_or("default")
             .to_string();
 
-        // Auto-detect format: if the file exists and doesn't have the
-        // binary magic, it's an old JSONL file — migrate transparently.
-        if path.exists() && !BinStorage::is_binary(&path) {
-            let jsonl = crate::storage::JsonlStorage::new(&path);
-            let documents = jsonl.load()?;
-            index.insert(&documents);
-            let bin = BinStorage::new(&path);
-            bin.store(&documents)?;
-        }
-
         let storage = BinStorage::new(&path);
         if storage.exists_with_magic() {
             let documents = storage.load()?;
@@ -315,12 +305,34 @@ impl Collection {
 
     /// Export the collection to a JSONL file for debugging / inspection.
     ///
-    /// The exported file can be inspected with `cat`, `grep`, `sed`,
-    /// and re-imported with a future `Collection::open()` call (the
-    /// old JSONL format is auto-detected and migrated).
+    /// Each line is a self-describing JSON object that can be inspected
+    /// with `cat`, `grep`, `sed`.
     pub fn export_jsonl(&self, path: impl Into<std::path::PathBuf>) -> Result<()> {
-        let jsonl = crate::storage::JsonlStorage::new(path);
-        jsonl.store(self.index.documents())
+        use std::io::Write;
+        let path: std::path::PathBuf = path.into();
+        let file = std::fs::File::create(&path).map_err(|source| crate::error::Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let mut writer = std::io::BufWriter::new(file);
+        for doc in self.index.documents() {
+            let line = serde_json::to_string(doc).map_err(|source| {
+                crate::error::Error::ParseJson {
+                    line: 0,
+                    detail: "failed to serialize document".into(),
+                    source,
+                }
+            })?;
+            writeln!(writer, "{}", line).map_err(|source| crate::error::Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        writer.flush().map_err(|source| crate::error::Error::Io {
+            path,
+            source,
+        })?;
+        Ok(())
     }
 
     /// Execute a hybrid search combining vector similarity and BM25 text search.

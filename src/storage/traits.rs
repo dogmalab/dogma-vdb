@@ -189,11 +189,6 @@ impl MmapBackedStorage {
         Ok(Self { _file: file, mmap })
     }
 
-    /// Wrap an existing mapping (used internally).
-    #[allow(dead_code)]
-    pub fn from_parts(file: std::fs::File, mmap: memmap2::Mmap) -> Self {
-        Self { _file: file, mmap }
-    }
 }
 
 impl VectorStorage for MmapBackedStorage {

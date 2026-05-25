@@ -1,16 +1,16 @@
 //! # dogma-vdb
 //!
-//! Portable vector database in JSONL format.
+//! Portable vector database in JSONL / binary format.
 //!
 //! ## Design principles
 //!
 //! * **Minimal dependencies** — the core only pulls in `serde_json` + `serde` + `thiserror`.
-//!   Everything else (notify, tokio, rmcp) is optional behind feature flags.
-//! * **Portable format** — every `.vdb` file is plain JSONL, inspectable with
+//!   Everything else (rayon, notify) is optional behind feature flags.
+//! * **Portable format** — every `.vdb` file is plain binary (or JSONL), debugeable with
 //!   `cat`, `grep`, `sed`, and versionable with `git`.
 //! * **No server** — file‑based, zero config, no daemon.
-//! * **MCP‑ready** — an optional MCP server lets Claude Desktop, Cursor,
-//!   opencode, or any MCP‑compatible agent query your collections.
+//! * **MCP‑ready** — an optional MCP server crate (`dogma-vdb-mcp`) lets Claude Desktop,
+//!   Cursor, opencode, or any MCP‑compatible agent query your collections.
 //! * **Watch mode** — an optional file watcher re‑indexes source files
 //!   automatically on every change.
 //!
@@ -41,9 +41,6 @@ pub mod storage;
 #[cfg(feature = "watch")]
 pub mod watch;
 
-#[cfg(feature = "mcp")]
-pub mod mcp;
-
 // Re‑export for convenience
 pub use config::{Config, CONFIG};
 
@@ -58,5 +55,4 @@ pub mod prelude {
     pub use crate::index::{
         BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
     };
-    pub use crate::storage::JsonlStorage;
 }

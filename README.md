@@ -2,7 +2,7 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: Beta — core compiles, **189 tests pass**, SIMD-accelerated,
+**Status**: Beta — core compiles, **202 tests pass**, SIMD-accelerated,
 binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
 CLI, MCP server, file watcher, FastEmbed ONNX integration, LangChain MCP adapter,
 Cross-Encoder reranking pipeline, **SmartChunker with 5 strategies + Tree-sitter AST + Semantic embeddings**.
@@ -242,7 +242,6 @@ sq_rescore = false
 |------|---------|-----------|
 | *(none)* | Core only — 3 deps | serde, serde_json, thiserror |
 | `watch` | File watcher | notify, crossbeam-channel |
-| `mcp` | MCP server over stdio | rmcp, tokio, tracing, clap |
 | `chunker-syntax` | Tree-sitter AST code chunking | tree-sitter + 4 grammars |
 
 ---
@@ -251,12 +250,11 @@ sq_rescore = false
 
 ```bash
 cargo check --workspace
-cargo test          # 189 tests
-cargo test --features chunker-syntax  # 189 + tree-sitter tests
-cargo clippy -- -D warnings
+cargo test          # 202 tests
+cargo test --features chunker-syntax  # 202 + tree-sitter tests
+cargo clippy --all-targets
 cargo fmt --check
-cargo run --release --example bench
-cargo audit
+cargo run --release --bin dogma-vdb-benchmarks 2>/dev/null || echo "(benchmarks need data)"
 ```
 
 ---

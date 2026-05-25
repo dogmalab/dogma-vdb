@@ -107,11 +107,18 @@ impl IvfPqConfig {
 // K‑Means helper
 // ---------------------------------------------------------------------------
 
-/// Simple K‑Means clustering.
+/// Simple K‑Means clustering with **K‑Means++ initialisation**.
 ///
-/// Returns `k` centroids (each `D`-dimensional).  Initialisation picks `k`
-/// random data points.  Runs up to `max_iter` iterations, early‑stopping
-/// when no assignment changes.
+/// Returns `k` centroids (each `D`-dimensional).  Initialisation uses the
+/// standard K‑Means++ D² weighting (Arthur & Vassilvitskii 2007):
+///
+/// 1. Pick the first centroid uniformly at random.
+/// 2. For each remaining centroid, select a data point `x` with
+///    probability ∝ D(x)² where D(x) is the **Euclidean distance**
+///    to the nearest already‑chosen centroid.
+///
+/// Runs up to `max_iter` iterations, early‑stopping when no assignment
+/// changes.  The iterative refinement uses the configured `metric`.
 fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<Vec<f32>> {
     if data.is_empty() || k == 0 {
         return Vec::new();
@@ -119,34 +126,70 @@ fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<V
     let dim = data[0].len();
     let n = data.len();
 
-    // 1. Initialise: pick k distinct data points
+    // ------------------------------------------------------------------
+    // 1. K‑Means++ initialisation
+    // ------------------------------------------------------------------
     let mut rng = 42u64;
     let mut centroids: Vec<Vec<f32>> = Vec::with_capacity(k);
-    let mut used = vec![false; n];
-    for _ in 0..k.min(n) {
-        rng = rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let idx = (rng >> 33) as usize % n;
-        if !used[idx] {
-            centroids.push(data[idx].clone());
-            used[idx] = true;
-        } else {
-            // Fallback: sequential scan for unused
-            for i in 0..n {
-                if !used[i] {
-                    centroids.push(data[i].clone());
-                    used[i] = true;
-                    break;
-                }
+    let k_eff = k.min(n);
+
+    // Helper: splitmix64 next → u64 in [0, limit)
+    fn next_splitmix(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    // Pick first centroid uniformly at random
+    let idx0 = (next_splitmix(&mut rng) as usize) % n;
+    centroids.push(data[idx0].clone());
+
+    // D²(x): squared Euclidean distance from x to its nearest centroid
+    let mut min_d2 = vec![f64::MAX; n];
+    // Initialise: distance from every point to the first centroid
+    for (i, v) in data.iter().enumerate() {
+        let d2 = squared_euclidean(v, &data[idx0]);
+        min_d2[i] = d2;
+    }
+
+    // Pick remaining k-1 centroids via D² weighting
+    for _ in 1..k_eff {
+        // Compute total weight W = Σ D(x)²
+        let total_w: f64 = min_d2.iter().sum();
+        if total_w <= 0.0 {
+            break; // all remaining points identical to a centroid
+        }
+
+        // Weighted random pick
+        let threshold = next_splitmix(&mut rng) as f64 / (u64::MAX as f64) * total_w;
+        let mut cumulative = 0.0f64;
+        let mut pick = 0;
+        for (i, &d2) in min_d2.iter().enumerate() {
+            cumulative += d2;
+            if cumulative >= threshold {
+                pick = i;
+                break;
+            }
+        }
+
+        centroids.push(data[pick].clone());
+
+        // Update min_d2 for the new centroid
+        for (i, v) in data.iter().enumerate() {
+            let d2 = squared_euclidean(v, &data[pick]);
+            if d2 < min_d2[i] {
+                min_d2[i] = d2;
             }
         }
     }
+
+    // Pad with zero vectors if we somehow ended up with fewer (shouldn't happen)
     while centroids.len() < k {
         centroids.push(vec![0.0; dim]);
     }
 
-    // 2. Iterate assignment → update
+    // ------------------------------------------------------------------
+    // 2. Iterate assignment → update (Lloyd)
+    // ------------------------------------------------------------------
     let mut assignments = vec![0usize; n];
     for _iter in 0..max_iter {
         let mut changed = false;
@@ -192,6 +235,19 @@ fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<V
     }
 
     centroids
+}
+
+/// Squared Euclidean distance between two f32 slices, returned as f64
+/// (to avoid overflow when summing many dimensions).
+#[inline]
+fn squared_euclidean(a: &[f32], b: &[f32]) -> f64 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let d = *x as f64 - *y as f64;
+            d * d
+        })
+        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +453,7 @@ impl IvfPqIndex {
 
         // ---- IVF: K‑Means ----
         let k = self.config.n_list.min(n);
-        self.centroids = kmeans(&all_vecs, k, 20, self.config.metric);
+        self.centroids = kmeans(&all_vecs, k, 30, self.config.metric);
 
         // Assign docs to nearest centroid
         self.clusters = vec![Vec::new(); k];
@@ -423,7 +479,7 @@ impl IvfPqIndex {
             let end = start + subdim;
             let subvecs: Vec<Vec<f32>> = all_vecs.iter().map(|v| v[start..end].to_vec()).collect();
 
-            let cb = kmeans(&subvecs, cb_size.min(n), 20, Metric::Euclidean);
+            let cb = kmeans(&subvecs, cb_size.min(n), 30, Metric::Euclidean);
             self.codebooks.push(cb);
         }
 

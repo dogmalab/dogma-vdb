@@ -9,6 +9,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const DIM: usize = 64;
 const QUERIES: usize = 100;
 const TOP_K: usize = 10;
@@ -30,12 +33,22 @@ fn sample_files(root: &Path, max: usize) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        if files.len() >= max { break; }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue; };
+        if files.len() >= max {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
-            if files.len() >= max { break; }
+            if files.len() >= max {
+                break;
+            }
             let path = entry.path();
-            if path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with('.')) {
+            if path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with('.'))
+            {
                 continue;
             }
             if path.is_dir() {
@@ -49,6 +62,15 @@ fn sample_files(root: &Path, max: usize) -> Vec<std::path::PathBuf> {
 }
 
 fn main() {
+    // ── Rayon backpressure: half of logical cores ──
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((cpus / 2).max(1))
+        .build_global()
+        .unwrap_or(());
+
     let hermes_path = std::env::var("HERMES_AGENT_PATH").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/arggil".into());
         format!("{home}/Documents/DEV-WORKSPACE/hermes-agent")
@@ -57,6 +79,8 @@ fn main() {
     eprintln!("=== dogma-vdb Benchmark (sampled) ===");
     eprintln!("Source: {hermes_path}");
     eprintln!("Sample: up to {SAMPLE_FILES} files\n");
+    eprintln!("Rayon threads: {} ({} cores / 2)", (cpus / 2).max(1), cpus);
+    eprintln!("Allocator: jemalloc");
 
     // ── Ingest ──
     let chunker = SmartChunker::default();
@@ -71,14 +95,25 @@ fn main() {
 
     let t0 = Instant::now();
     for path in &sample_files(Path::new(&hermes_path), SAMPLE_FILES) {
-        if file_count >= SAMPLE_FILES as u64 { break; }
+        if file_count >= SAMPLE_FILES as u64 {
+            break;
+        }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if binary_exts.contains(&ext) { skipped += 1; continue; }
+        if binary_exts.contains(&ext) {
+            skipped += 1;
+            continue;
+        }
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => { skipped += 1; continue; }
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
         };
-        if content.trim().is_empty() { skipped += 1; continue; }
+        if content.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
         file_count += 1;
         let rel = path.strip_prefix(&hermes_path).unwrap_or(path);
         let base_id = rel.to_string_lossy().replace(['/', '\\', '.'], "-");
@@ -87,8 +122,11 @@ fn main() {
     }
     let ingest_t = t0.elapsed();
 
-    eprintln!("Ingested: {file_count} files, {} chunks, {:.2}s, {skipped} skipped",
-        all_docs.len(), ingest_t.as_secs_f64());
+    eprintln!(
+        "Ingested: {file_count} files, {} chunks, {:.2}s, {skipped} skipped",
+        all_docs.len(),
+        ingest_t.as_secs_f64()
+    );
 
     // ── Embed ──
     let t0 = Instant::now();
@@ -99,8 +137,9 @@ fn main() {
     eprintln!("Embed: {} docs, {:.2}s", all_docs.len(), embed_t.as_secs_f64());
     let doc_count = all_docs.len();
 
-    // ── Index build ──
+    // ── Index build (MEMORY-EFFICIENT: drop all_docs after last index) ──
     eprintln!("\n── Index Build ──");
+
     let (bf, t_bf) = {
         let t = Instant::now();
         let mut idx = BruteForceIndex::new_with(Metric::Cosine, false, false);
@@ -112,41 +151,66 @@ fn main() {
     let (hnsw, t_hnsw) = {
         let t = Instant::now();
         let mut idx = HnswIndex::new(HnswConfig {
-            m: 16, ef_construction: 200, ef_search: 50,
-            metric: Metric::Cosine, flat_embeddings: false,
-            sq: false, sq_rescore: false,
+            m: 16,
+            ef_construction: 200,
+            ef_search: 50,
+            metric: Metric::Cosine,
+            flat_embeddings: false,
+            sq: false,
+            sq_rescore: false,
         });
         idx.insert(&all_docs);
         (idx, t.elapsed())
     };
     eprintln!("  HNSW:       {:>8.2} ms", t_hnsw.as_secs_f64() * 1000.0);
 
+    // Last index: free all_docs immediately after to reduce peak RSS
     let (ivfpq, t_ivfpq) = {
         let t = Instant::now();
         let config = IvfPqConfig {
-            n_list: 256.min(doc_count), m_subspaces: 8, n_probe: 8,
-            metric: Metric::Cosine, rerank_enabled: false,
+            n_list: 256.min(doc_count),
+            m_subspaces: 8,
+            n_probe: 8,
+            metric: Metric::Cosine,
+            rerank_enabled: false,
         };
         let _ = config.validate();
         let mut idx = IvfPqIndex::new(config);
         idx.insert(&all_docs);
         (idx, t.elapsed())
     };
+    // Liberar all_docs INMEDIATAMENTE después del último índice
     drop(all_docs);
     eprintln!("  IVF-PQ:     {:>8.2} ms", t_ivfpq.as_secs_f64() * 1000.0);
 
     // ── Query bench ──
     let queries: Vec<Vec<f32>> = (0..QUERIES)
-        .map(|_| (0..DIM).map(|i| {
-            let v = ((i as u64 * 6364136223846793005).wrapping_mul(QUERIES as u64 + 1) >> 33) as f64 / 1e9;
-            v as f32
-        }).collect())
+        .map(|_| {
+            (0..DIM)
+                .map(|i| {
+                    let v = ((i as u64 * 6364136223846793005)
+                        .wrapping_mul(QUERIES as u64 + 1)
+                        >> 33)
+                        as f64
+                        / 1e9;
+                    v as f32
+                })
+                .collect()
+        })
         .collect();
 
-    eprintln!("\n── Query Benchmark ({QUERIES} queries, top_k={TOP_K}) ──");
+    eprintln!(
+        "\n── Query Benchmark ({QUERIES} queries, top_k={TOP_K}) ──"
+    );
 
-    fn bench(label: &str, index: &impl Index, bf: &BruteForceIndex,
-             queries: &[Vec<f32>], top_k: usize, build_ms: f64) {
+    fn bench(
+        label: &str,
+        index: &impl Index,
+        bf: &BruteForceIndex,
+        queries: &[Vec<f32>],
+        top_k: usize,
+        build_ms: f64,
+    ) {
         let mut latencies = Vec::with_capacity(queries.len());
         let mut recall = 0.0;
         for q in queries {
@@ -156,7 +220,10 @@ fn main() {
             let bf_results = bf.search(q, top_k);
             let bf_ids: std::collections::HashSet<&str> =
                 bf_results.iter().map(|r| r.document.id.as_str()).collect();
-            let hits = results.iter().filter(|r| bf_ids.contains(r.document.id.as_str())).count();
+            let hits = results
+                .iter()
+                .filter(|r| bf_ids.contains(r.document.id.as_str()))
+                .count();
             recall += hits as f64 / top_k as f64;
         }
         latencies.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
@@ -164,13 +231,36 @@ fn main() {
         let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
         let mean = latencies.iter().sum::<f64>() / latencies.len() as f64;
         recall /= queries.len() as f64;
-        eprintln!("  {:<12} build={:>7.2}ms  p50={:>8.1}μs  p95={:>8.1}μs  mean={:>8.1}μs  recall={:>5.1}%",
-            label, build_ms, p50, p95, mean, recall * 100.0);
+        eprintln!(
+            "  {:<12} build={:>7.2}ms  p50={:>8.1}μs  p95={:>8.1}μs  mean={:>8.1}μs  recall={:>5.1}%",
+            label, build_ms, p50, p95, mean, recall * 100.0
+        );
     }
 
-    bench("BruteForce", &bf, &bf, &queries, TOP_K, t_bf.as_secs_f64() * 1000.0);
-    bench("HNSW",       &hnsw, &bf, &queries, TOP_K, t_hnsw.as_secs_f64() * 1000.0);
-    bench("IVF-PQ",     &ivfpq, &bf, &queries, TOP_K, t_ivfpq.as_secs_f64() * 1000.0);
+    bench(
+        "BruteForce",
+        &bf,
+        &bf,
+        &queries,
+        TOP_K,
+        t_bf.as_secs_f64() * 1000.0,
+    );
+    bench(
+        "HNSW",
+        &hnsw,
+        &bf,
+        &queries,
+        TOP_K,
+        t_hnsw.as_secs_f64() * 1000.0,
+    );
+    bench(
+        "IVF-PQ",
+        &ivfpq,
+        &bf,
+        &queries,
+        TOP_K,
+        t_ivfpq.as_secs_f64() * 1000.0,
+    );
 
     // Speedup vs BF
     eprintln!("\n── Speedup vs BruteForce ──");
@@ -178,8 +268,15 @@ fn main() {
     for (label, idx) in [("HNSW", &hnsw as &dyn Index), ("IVF-PQ", &ivfpq as &dyn Index)] {
         let m = latencies_for(idx, &queries, TOP_K);
         let speedup = bf_mean / m;
-        eprintln!("  {label:<12} {:.1}× {}", speedup,
-            if speedup > 1.0 { "faster than BF" } else { "slower than BF" });
+        eprintln!(
+            "  {label:<12} {:.1}× {}",
+            speedup,
+            if speedup > 1.0 {
+                "faster than BF"
+            } else {
+                "slower than BF"
+            }
+        );
     }
     eprintln!("\n=== Done ===");
 }

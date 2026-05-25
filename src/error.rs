@@ -7,9 +7,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("File not found: {0}")]
-    FileNotFound(PathBuf),
-
     #[error("I/O error on {path}: {source}")]
     Io {
         path: PathBuf,
@@ -24,18 +21,6 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
-
-    #[error("Embedding failed: {0}")]
-    Embedding(String),
-
-    #[error("Collection '{0}' not found")]
-    CollectionNotFound(String),
-
-    #[error("Dimension mismatch: expected {expected}, got {got}")]
-    DimensionMismatch { expected: usize, got: usize },
-
-    #[error("Empty index on collection '{0}'")]
-    EmptyIndex(String),
 
     #[error("Feature not available: {0}")]
     FeatureNotAvailable(&'static str),

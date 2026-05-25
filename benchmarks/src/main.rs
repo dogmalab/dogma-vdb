@@ -20,7 +20,6 @@ use dogma_vdb::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfi
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 // ============================================================================
@@ -50,8 +49,6 @@ const WARMUP: usize = 3; // warmup antes de medir
 // ============================================================================
 // Generacion de datos deterministicos (SplitMix64)
 // ============================================================================
-
-static SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct TestData {
@@ -107,18 +104,6 @@ fn make_test_data(n: usize, dim: usize) -> TestData {
 // ============================================================================
 // Medicion de RAM (Linux /proc/self/status)
 // ============================================================================
-
-fn read_vmpeak_kb() -> u64 {
-    let status = fs::read_to_string("/proc/self/status").unwrap_or_default();
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmPeak:") {
-            if let Ok(kb) = rest.trim().trim_end_matches(" kB").parse::<u64>() {
-                return kb;
-            }
-        }
-    }
-    0
-}
 
 fn read_vmrss_kb() -> u64 {
     let status = fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -222,7 +207,7 @@ fn recall_at_k(
 struct BenchContext {
     metric: Metric,
     queries: Vec<Vec<f32>>,
-    dim: usize,
+    _dim: usize,
     exact_results: Vec<Vec<dogma_vdb::index::ScoredDocument>>,
 }
 
@@ -690,7 +675,7 @@ fn result_to_json(r: &IndexResult, n: usize, dim: usize, metric: Metric) -> serd
 
 #[cfg(feature = "chunker-syntax")]
 fn bench_chunking() -> (f64, f64, u64) {
-    use dogma_vdb::smart_chunker::{FileType, SmartChunker};
+    use dogma_vdb::smart_chunker::{ChunkStrategy, SmartChunker};
     use std::path::Path;
 
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -716,13 +701,13 @@ fn bench_chunking() -> (f64, f64, u64) {
     collect(&src_dir, &mut all_code, &mut total_bytes);
 
     let chunker = SmartChunker::default();
-    let _ = chunker.chunk_text(&all_code, FileType::Rust);
+    let _ = chunker.chunk_text(&all_code, ChunkStrategy::Code);
 
     let iters = 20;
     let start = Instant::now();
     let mut total_chunks = 0usize;
     for _ in 0..iters {
-        total_chunks += chunker.chunk_text(&all_code, FileType::Rust).len();
+        total_chunks += chunker.chunk_text(&all_code, ChunkStrategy::Code).len();
     }
     let elapsed = start.elapsed();
     let mb_per_sec = (total_bytes as f64 * iters as f64) / elapsed.as_secs_f64() / 1024.0 / 1024.0;
@@ -819,7 +804,7 @@ fn main() {
                 let ctx = BenchContext {
                     metric,
                     queries: data.queries.clone(),
-                    dim,
+                    _dim: dim,
                     exact_results,
                 };
 
@@ -941,8 +926,10 @@ fn generate_tuning_report(json_path: &Path) -> String {
         peak_ram_mb: f64,
         latency_mean_us: f64,
         build_time_s: f64,
-        n: usize,
-        dim: usize,
+        #[serde(rename = "n")]
+        _n: usize,
+        #[serde(rename = "dim")]
+        _dim: usize,
     }
 
     let all_results: Vec<JsonResult> = match serde_json::from_str(&json_str) {

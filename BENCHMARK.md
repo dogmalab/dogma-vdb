@@ -19,10 +19,10 @@
 
 | Index | Build | vec/s | RAM (MB) |
 |-------|-------|-------|----------|
-| BF | 98 ms | 1M | 165.6 |
-| HNSW M=16 ef=50 | 2.7 min | 614 | 0.0 |
-| HNSW M=16 ef=200 | 4.4 min | 375 | 0.0 |
-| IVF-PQ nlist=256 M=16 | 3.7 min | 453 | 0.0 |
+| BF | 38 ms | 3M | 11.5 |
+| HNSW M=16 ef=50 | 2.4 min | 692 | 66.4 |
+| HNSW M=16 ef=200 | 3.9 min | 433 | 48.9 |
+| IVF-PQ nlist=256 M=16 | 1.9 min | 885 | 164.5 |
 
 
 ### Precision: Recall@K (vs BruteForce)
@@ -30,33 +30,33 @@
 | Index | Recall@1 | Recall@10 | Recall@100 |
 |-------|----------|-----------|------------|
 | BF | 100% | 100% | 100% |
-| HNSW M=16 ef=50 | 0% | 60% | 19% |
-| HNSW M=16 ef=200 | 0% | 80% | 38% |
-| IVF-PQ nlist=256 M=16 | 0% | 40% | 16% |
+| HNSW M=16 ef=50 | 0% | 30% | 15% |
+| HNSW M=16 ef=200 | 0% | 70% | 28% |
+| IVF-PQ nlist=256 M=16 | 0% | 20% | 7% |
 
 
 ### Rendimiento: Latencia de Consulta
 
 | Index | Mean | p50 | p95 | p99 |
 |-------|------|-----|-----|-----|
-| BF | 186.4 ms | 186.0 ms | 192.7 ms | 204.4 ms |
-| HNSW M=16 ef=50 | 993 us | 976 us | 1.2 ms | 1.2 ms |
-| HNSW M=16 ef=200 | 1.9 ms | 1.9 ms | 2.1 ms | 2.4 ms |
-| IVF-PQ nlist=256 M=16 | 11.5 ms | 11.5 ms | 12.2 ms | 13.8 ms |
+| BF | 12.4 ms | 12.3 ms | 13.2 ms | 14.9 ms |
+| HNSW M=16 ef=50 | 1.1 ms | 1.1 ms | 1.3 ms | 1.4 ms |
+| HNSW M=16 ef=200 | 2.1 ms | 2.1 ms | 2.3 ms | 2.7 ms |
+| IVF-PQ nlist=256 M=16 | 1.2 ms | 1.0 ms | 1.9 ms | 3.1 ms |
 
 
 ### Sweet Spot: Recall@10 vs QPS vs RAM
 
 | Index | Recall@10 | QPS | xBF | RAM (MB) |
 |-------|-----------|-----|-----|----------|
-| HNSW M=16 ef=50 | 60% | 1K | 188x | 0.0 |
-| HNSW M=16 ef=200 | 80% | 531 | 99x | 0.0 |
-| IVF-PQ nlist=256 M=16 | 40% | 87 | 16x | 0.0 |
+| HNSW M=16 ef=50 | 30% | 900 | 11x | 66.4 |
+| HNSW M=16 ef=200 | 70% | 479 | 6x | 48.9 |
+| IVF-PQ nlist=256 M=16 | 20% | 857 | 11x | 164.5 |
 
 #### Sweet Spot
 
-- Mas rapido (Recall≥50%): **HNSW M=16 ef=50** — 993 us us, Recall@10=60%
-- Menor RAM (Recall≥50%): **HNSW M=16 ef=50** — 0.0 MB, Recall@10=60%
+- Mas rapido (Recall≥50%): **HNSW M=16 ef=200** — 2.1 ms us, Recall@10=70%
+- Menor RAM (Recall≥50%): **BF** — 11.5 MB, Recall@10=100%
 
 ---
 *Benchmark generado con dogma-vdb grid benchmark*

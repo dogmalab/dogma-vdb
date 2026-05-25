@@ -40,29 +40,37 @@ busqueda puede usar i8 con rescore opcional.
 
 ## 3. Estructura de Archivos
 
-```
+```text
 src/
   lib.rs                  # Mod declarations + prelude
   doc.rs                  # Document struct + builder
   distance.rs             # Metric, score(), dot(), cosine(), euclidean(), score_i8()
   error.rs                # Error types
-  storage.rs              # BinStorage (JSONL + binario v2 read/write/append)
-  collection.rs           # Collection API (open, insert, search, etc.)
+  storage/
+    mod.rs                # BinStorage (binary v2 read/write) + JsonlStorage
+    traits.rs             # VectorStorage trait + MemoryBackedStorage + MmapBackedStorage
+  collection.rs           # Collection API (open, insert, search, hybrid_search, etc.)
+  config.rs               # Config load from TOML + env vars (global CONFIG)
   filter.rs               # Metadata filter helpers
   embedding.rs            # Embedder trait (for text→vec)
-  watch.rs                # File watcher (notify v8)
-  mcp.rs                  # MCP server (stdio)
+  memory.rs               # Memory guard (pressure detection from /proc/meminfo)
+  rerank.rs               # Reranker trait + NoRerank default
+  chunker.rs              # Simple text chunker (legacy)
+  watch.rs                # File watcher (notify v8, feature = "watch")
   index/
     mod.rs                # Index trait + factory + re-exports
     brute_force.rs        # BruteForceIndex
     hnsw.rs               # HnswIndex + HnswConfig
     ivf_pq.rs             # IvfPqIndex + IvfPqConfig
+    ivf_pq_persistence.rs # Atomic persistence, soft-delete, compaction
     sq.rs                 # SQ helpers: quantize(), score_i8(), rescore()
-  storage/
-    mod.rs                # VectorStorage trait
-    memory.rs             # MemoryBackedStorage
-    mmap.rs               # MmapBackedStorage + MmapBackedStorageBuilder
-    traits.rs             # Helper traits (DataSize, MmapBackedStorage base)
+    bm25.rs               # BM25 inverted text index
+    rrf.rs                # Reciprocal Rank Fusion
+  smart_chunker/
+    mod.rs                # SmartChunker: auto-detect strategy, dispatch
+    code.rs               # CodeChunker (regex-based)
+    paragraph.rs           # ParagraphChunker + chunk_semantic (merged)
+    fixed_window.rs        # FixedWindowChunker (replaces markdown, jsonl, text)
 ```
 
 ---
@@ -226,10 +234,11 @@ Para 5K docs 128-dim, n_list=100, m_subspaces=32:
 
 ```rust
 pub trait VectorStorage: Send + Sync {
+    fn as_bytes(&self) -> &[u8];
+    fn as_embeddings(&self) -> &[f32];
+    fn flush(&self) -> Result<()>;
     fn len(&self) -> usize;
-    fn dim(&self) -> usize;
-    fn get(&self, idx: usize) -> &[f32];
-    fn as_slice(&self) -> Option<&[f32]>;
+    fn is_empty(&self) -> bool;
 }
 ```
 
@@ -238,30 +247,27 @@ pub trait VectorStorage: Send + Sync {
 **MemoryBackedStorage**:
 ```rust
 pub struct MemoryBackedStorage {
-    data: Vec<f32>,
-    dim: usize,
+    data: Vec<u8>,
 }
 ```
-- Vec<f32> contiguo en RAM.
-- `as_slice()` devuelve `Some(&data)`.
-- Para tests, pipelines volatiles, warm cache.
+- Vec<u8> contiguo en RAM (embeddings f32 reinterpretados vía `as_embeddings()`).
+- `as_embeddings()` devuelve `&[f32]` via `unsafe { from_raw_parts() }` (aislado, auditado).
+- `from_f32_slice()`: construye desde `&[f32]` (copia).
+- Para tests, pipelines volátiles, warm cache.
 
 **MmapBackedStorage**:
 ```rust
 pub struct MmapBackedStorage {
     _file: std::fs::File,    // mantiene fd vivo
     mmap: memmap2::Mmap,     // mapping de todo el archivo
-    offset: usize,           // offset donde empiezan los vectores
-    len: usize,              // numero de vectores
-    dim: usize,              // dimension
 }
 ```
 - Carga ~0ms: el OS pagea bajo demanda.
 - Formato binario v2 con padding 32-byte.
-- `as_slice()` devuelve `None` (los bytes mapeados no son Vec<f32>).
-- `get()` convierte el offset a puntero f32 (vida ligada al Mmap).
+- `as_embeddings()` reinterpreta los bytes mapeados como `&[f32]`.
+- `advise(Advice::Random)` para eliminar readahead page faults.
 - ⚠️ SIGBUS: si un proceso externo trunca el archivo, el kernel mata
-  el proceso. Documentado en el codigo.
+  el proceso. Documentado en el código.
 
 ### 6.3. Integracion en Collection
 
@@ -361,8 +367,10 @@ fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<d
 - rayon — parallel BruteForce
 - toml, once_cell, log — config
 - memmap2 — MmapBackedStorage
+- bytemuck — safe f32↔[u8] reinterpret
+- wide — SIMD-accelerated distance functions
+- regex-lite — smart chunker patterns
 - notify, crossbeam-channel — watcher (feature)
-- rmcp, tokio, tracing, clap — MCP (feature)
 
 ### Sin dependencias externas para algoritmos core
 - HNSW: SplitMix64 (ya implementado en core)
@@ -409,7 +417,7 @@ RAM estimada para 100K docs 384-dim:
 
 | Item | Prioridad | Descripcion |
 |------|:---------:|-------------|
-| MCP HTTP auth | Media | Si se implementa `serve_http`, anadir path whitelist y autenticacion basica |
+| MCP HTTP auth | Media | Seguridad para futura implementación HTTP del MCP server en crate separado |
 | File locking (fs2) | Media | Bloqueo OS-level para evitar SIGBUS por escritura concurrente |
 | Watcher path sandbox | Baja | Validar que `source_dirs` este dentro de un directorio base configurado |
 | Model checksum verification | Baja | Verificar checksum SHA256 de modelos ONNX descargados |

@@ -123,7 +123,7 @@ impl CollectionConfig {
         256
     }
     fn default_ivf_pq_n_subvectors() -> usize {
-        8
+        32
     }
     fn default_ivf_pq_n_probe() -> usize {
         8

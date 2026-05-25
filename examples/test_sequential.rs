@@ -1,14 +1,11 @@
-//! Test secuencial: ingerir hermes-agent, probar cada índice UNO POR UNO
-//! con liberación de memoria entre cada uno y telemetría de RSS.
+// Test secuencial: ingerir hermes-agent, probar cada índice UNO POR UNO
+// con liberación de memoria entre cada uno y telemetría de RSS.
 //!
 //! Uso: cargo run --release --example test_sequential
 //!      RUST_LOG=info cargo run --release --example test_sequential
 //!   (con --features chunker-syntax para chunking con tree-sitter)
-
-#[cfg(target_os = "linux")]
-#[global_allocator]
-#[cfg(not(test))]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+//!
+//! Nota: jemalloc desactivado para diagnóstico — ver issue del chunker
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
@@ -20,6 +17,7 @@ use dogma_vdb::smart_chunker::SmartChunker;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
+use std::panic;
 use std::time::Instant;
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -230,7 +228,19 @@ fn main() {
         }
         let rel = path.strip_prefix(&hermes_path).unwrap_or(path);
         let base_id = rel.to_string_lossy().replace(['/', '\\', '.'], "-");
-        let docs = chunker.chunk_to_docs(path, &content, &base_id, HashMap::new());
+        
+        // Wrapped en catch_unwind para capturar panics
+        let docs_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            chunker.chunk_to_docs(path, &content, &base_id, HashMap::new())
+        }));
+        let docs = match docs_result {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("  ❌ PANIC en chunk_to_docs para {:?}: {:?}", rel, e);
+                std::io::stderr().flush().ok();
+                Vec::new()
+            }
+        };
         all_docs.extend(docs);
     }
     let ingest_t = t0.elapsed();
