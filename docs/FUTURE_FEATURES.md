@@ -234,16 +234,179 @@ Con 500 archivos .rs:
 
 ---
 
+## 3. 🌐 Capa de Red Industrial & Transporte (`src/network/`)
+
+**Objetivo:** Exponer el motor vectorial a microservicios e integraciones
+remotas empresariales mediante protocolos de alto rendimiento, bajo el
+feature-gate `#[cfg(feature = "net")]`.
+
+### 3.1. gRPC Server (`src/network/grpc.rs`)
+
+Implementación nativa usando el crate [`tonic`](https://crates.io/crates/tonic).
+Definición de un esquema `.proto` optimizado para el streaming bidireccional
+de vectores densos (`f32` / `i8`) y payloads de metadatos.
+
+```protobuf
+service DogmaVdb {
+  // Búsqueda vectorial simple
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Búsqueda híbrida (vector + BM25 + reranker)
+  rpc HybridSearch(HybridSearchRequest) returns (SearchResponse);
+
+  // Ingesta por streaming de documentos
+  rpc Ingest(stream Document) returns (IngestResponse);
+
+  // Eliminación por ID
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message SearchRequest {
+  string collection_path = 1;
+  repeated float embedding = 2;
+  uint32 k = 3;
+  string index_type = 4;   // bruteforce | hnsw | ivf_pq
+  string metric = 5;       // cosine | dot | euclidean
+  bool rerank = 6;
+  string query_text = 7;   // requerido si rerank = true
+}
+```
+
+#### Arquitectura
+
+```
+                    ┌─────────────────────────────┐
+                    │      tonic gRPC Server       │
+                    │   (http2, multiplexed)       │
+                    └──┬──────────┬───────────┬────┘
+                       │          │           │
+              ┌────────┴──┐ ┌─────┴──────┐ ┌──┴─────────┐
+              │ Search    │ │ Hybrid     │ │ Ingest     │
+              │ Handler   │ │ Handler    │ │ Handler    │
+              └────┬──────┘ └─────┬──────┘ └─────┬──────┘
+                   │              │               │
+                   └──────┬──────┴───────────────┘
+                          │
+                    ┌─────┴──────┐
+                    │ Collection │
+                    │ (mmap)     │
+                    └────────────┘
+```
+
+#### Cliente Python
+
+```python
+import grpc
+from dogmavdb_pb2 import SearchRequest
+from dogmavdb_pb2_grpc import DogmaVdbStub
+
+channel = grpc.insecure_channel("localhost:50051")
+client = DogmaVdbStub(channel)
+response = client.Search(SearchRequest(
+    collection_path="data/docs.vdb",
+    embedding=[0.1, 0.2, 0.3],
+    k=10,
+    index_type="hnsw",
+    metric="cosine",
+))
+```
+
+### 3.2. MCP vía HTTP / WebSockets (`src/network/mcp_http.rs`)
+
+Evolucionar el transporte del MCP server actual (stdio) a SSE
+(Server-Sent Events) o WebSockets sobre HTTP. Permite que múltiples
+agentes remotos (Claude Desktop, Cursor, opencode, scripts) se conecten
+simultáneamente sin estar amarrados al ciclo de vida de un solo proceso
+de terminal.
+
+#### Estado actual del MCP server
+
+```
+hoy:   serve_server(server, (stdin(), stdout()).into_transport())
+mañana: serve_server(server, http_into_transport("0.0.0.0:5000"))
+```
+
+El crate `rmcp` que ya usamos soporta transporte HTTP/SSE. Lo que falta
+es añadir `axum` como servidor HTTP y elegir el transporte por flag CLI.
+
+```bash
+# Hoy (solo stdio):
+dogma-vdb-mcp
+
+# Mañana (HTTP / WebSocket):
+dogma-vdb-mcp --transport http --port 5000
+dogma-vdb-mcp --transport ws --port 5000
+```
+
+#### Diagrama de conexiones simultáneas
+
+```
+        ┌──────────────┐
+        │ Claude       │────┐
+        │ Desktop      │    │
+        └──────────────┘    │   ┌────────────────────┐
+                            ├──►│  dogma-vdb MCP      │
+        ┌──────────────┐    │   │  Server (HTTP/WS)   │
+        │ Cursor       │────┘   │  :5000              │
+        └──────────────┘        │                     │
+                                │  Collection (mmap)  │
+        ┌──────────────┐        └────────────────────┘
+        │ opencode     │────┐
+        └──────────────┘    │
+                            │
+        ┌──────────────┐    │
+        │ Python SDK   │────┘
+        └──────────────┘
+```
+
+### 3.3. Feature Gate
+
+```toml
+[features]
+net = ["dep:tonic", "dep:axum", "dep:rmcp"]
+```
+
+### Archivos a modificar/crear
+
+| Archivo | Acción | LOC estimado |
+|---------|--------|:------------:|
+| `proto/dogmavdb.proto` | Nuevo — definición protobuf | ~80 |
+| `src/network/mod.rs` | Nuevo — feature gate + re-exports | ~10 |
+| `src/network/grpc.rs` | Nuevo — tonic server handlers | ~200 |
+| `src/network/mcp_http.rs` | Nuevo — HTTP/WS transport para MCP | ~100 |
+| `dogma-vdb-mcp/src/main.rs` | Modificar — flag `--transport` + `--port` | ~50 |
+| `Cargo.toml` | Modificar — feature `net` + deps opcionales | ~10 |
+| `build.rs` | Nuevo — compilación del .proto | ~30 |
+| **Total** | | **~480 LOC** |
+
+### Dependencias nuevas
+
+| Crate | Versión | Propósito |
+|-------|:-------:|-----------|
+| `tonic` | 0.12+ | Servidor/framework gRPC |
+| `prost` | 0.13+ | Compilación de `.proto` a Rust |
+| `axum` | 0.8+ | Servidor HTTP para MCP transport |
+| `rmcp` | 1.x | *(ya en el workspace, ampliar transporte)* |
+
+### Criterio de éxito
+
+```
+- gRPC: 10,000 queries/s en single core, colección de 10K docs 384-dim
+- MCP HTTP: 5 agentes simultáneos, sin interferencia entre conexiones
+- MCP WebSocket: latencia < 100 μs overhead sobre el tiempo de query real
+- net feature off por defecto: 0 impacto en binarios sin red
+```
+
+---
+
 ## Resumen de esfuerzo estimado
 
 | Feature | LOC | Dependencias nuevas | Prioridad |
 |---------|:---:|:-------------------:|:---------:|
 | Smart-Tuning Autónomo | ~260 | 0 | Alta |
 | Watcher Concurrente v2 | ~180 | 0 | Media |
-| **Total** | **~440** | **0** | |
-
-Ninguna de las dos features requiere nuevas dependencias externas.
-Ambas se implementan con Rust stdlib + el ecosistema existente del proyecto.
+| Capa de Red (gRPC + MCP HTTP) | ~480 | 4 (tonic, prost, axum, rmcp) | Media |
+| **Total** | **~920** | | |
 
 ---
 
