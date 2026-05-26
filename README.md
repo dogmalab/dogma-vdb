@@ -2,10 +2,10 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: Beta — core compiles, **202 tests pass**, SIMD-accelerated,
+**Status**: Beta — core compiles, **192 tests pass**, SIMD-accelerated,
 binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
-CLI, MCP server, file watcher, FastEmbed ONNX integration, LangChain MCP adapter,
-Cross-Encoder reranking pipeline, **SmartChunker with 5 strategies + Tree-sitter AST + Semantic embeddings**.
+CLI, MCP server, file watcher, FastEmbed ONNX integration,
+Cross-Encoder reranking pipeline, **SmartChunker with 3 strategies**.
 
 ---
 
@@ -62,7 +62,7 @@ operate at maximum speed without alignment faults.
 - **SIMD-accelerated** — dot product, cosine, euclidean via `wide` crate
   (SSE/AVX2 on x86, NEON on ARM). HNSW search ~3.6× faster, build ~4.3×.
 - **Binary native format v2** — header + metadata + raw f32 embeddings contiguous.
-  32-byte aligned. ~2.3× smaller, ~7× faster save/load vs JSONL. Auto-migration.
+  32-byte aligned. ~2.3× smaller, ~7× faster save/load vs JSONL.
 - **3 index backends**: BruteForce (exact), HNSW (approximate graph),
   IVF-PQ (inverted file + product quantization)
 - **SQ (i8 scalar quantization)**: orthogonal — applies to any backend.
@@ -81,7 +81,6 @@ operate at maximum speed without alignment faults.
   lookup tables. Validated at construction time.
 - **Rerank-aware IVF-PQ** — when `rerank_enabled=true`, IVF-PQ halves its
   probe count to favour speed; recall is recovered by the Cross-Encoder pass.
-- **LangChain MCP adapter**: `examples/langchain_mcp.py` — zero-code integration
 - **Watch mode**: optional file watcher for auto-reindexing
 - **FastEmbed ONNX**: `FastEmbedder` with all-MiniLM-L6-v2 (384-dim, ~90MB model)
 - **Pure Rust**: HNSW, IVF-PQ, SQ, reranker are custom implementations
@@ -91,28 +90,23 @@ operate at maximum speed without alignment faults.
 
 ---
 
-## 🧠 Smart Chunker — 7 Strategies
+## 🧠 Smart Chunker — 3 Strategies
 
 | Strategy | Engine | Best for |
 |----------|--------|----------|
-| **Code** (Rust/Python/JS/Go) | Tree-sitter AST *or* regex fallback | Source files with functions, classes, structs |
-| **Markdown** | Heading hierarchy (`#`, `##`, `###`) | Docs, blogs, wikis |
-| **JSONL** | Line-by-line | Structured logs, datasets |
-| **Paragraph** | Double-newline boundaries | Plain text, prose |
-| **Semantic** | Embedding cosine distance | Dense prose, books, essays without headings |
+| **Code** (Rust/Python/JS/Go) | Regex (function/class/struct detection) | Source files with definitions |
+| **Paragraph** | `\n\n` boundaries + optional semantic (embedding cosine) | Prose, essays, books |
+| **FixedWindow** | Fixed-size byte windows with UTF-8 safety | Markdown, JSONL, plain text, anything else |
 
-```bash
-# AST chunking (feature-gated):
-cargo build --features chunker-syntax
-
-# Semantic chunking (requires embedder):
+```rust
+// Semantic chunking (requires embedder):
 use dogma_vdb::smart_chunker::SmartChunker;
 let chunker = SmartChunker::default()
     .with_semantic(Box::new(embedder));
-let chunks = chunker.chunk_text(long_essay, FileType::Semantic);
+let chunks = chunker.chunk_text(long_essay, ChunkStrategy::Paragraph);
 ```
 
-> **Sub-chunkers stay sequential.** Concurrency lives only at the batch level (`rayon::par_iter()` over `InputFile` slices).
+> Concurrency lives only at the batch level (`rayon::par_iter()` over `InputFile` slices).
 
 ---
 
@@ -240,9 +234,98 @@ sq_rescore = false
 
 | Flag | Enables | Deps added |
 |------|---------|-----------|
-| *(none)* | Core only — 3 deps | serde, serde_json, thiserror |
+| *(default)* | Core | serde, serde_json, thiserror, rayon, wide, bytemuck, memmap2, once_cell, toml, log, regex-lite |
 | `watch` | File watcher | notify, crossbeam-channel |
-| `chunker-syntax` | Tree-sitter AST code chunking | tree-sitter + 4 grammars |
+
+---
+
+## Watch Mode
+
+Monitor directories and auto-index files as they change. Uses [`notify`](https://crates.io/crates/notify) v8.
+
+```rust
+use dogma_vdb::watch::{start_watching, WatchConfig};
+
+let rx = start_watching(WatchConfig {
+    source_dirs: vec!["docs/".into()],
+    extensions: vec!["md".into(), "rs".into()],
+    output: "data/docs.vdb".into(),
+    debounce_ms: 500,
+    initial_scan: true,
+})?;
+
+while let Ok(event) = rx.recv() {
+    match event {
+        WatchEvent::Updated { docs_added, .. } => println!("  +{docs_added} docs"),
+        WatchEvent::Error { message, .. } => eprintln!("  error: {message}"),
+        WatchEvent::Stopped => break,
+        _ => {}
+    }
+}
+```
+
+To enable at build time:
+```bash
+cargo build --features watch
+```
+
+Configuration via `config.toml`:
+```toml
+[watch]
+enabled = true
+source_dirs = ["docs/"]
+extensions = ["md", "rs", "py", "js"]
+output = "data/docs.vdb"
+debounce_ms = 500
+```
+
+---
+
+## MCP Server
+
+An MCP (Model Context Protocol) server lets any MCP-compatible agent query
+your `.vdb` collections — Claude Desktop, Cursor, opencode, etc.
+
+```bash
+# Build & run
+cargo build --release -p dogma-vdb-mcp
+./target/release/dogma-vdb-mcp
+```
+
+### Tools exposed
+
+| Tool | Description |
+|------|-------------|
+| `vecdb_query` | Vector search with optional reranking |
+| `vecdb_ingest` | Insert a document |
+| `vecdb_delete` | Delete by ID list |
+| `vecdb_list` | List documents |
+| `vecdb_info` | Collection stats |
+
+Enable two-stage reranking via Cross-Encoder:
+```bash
+DOGMA_RERANK=1 ./target/release/dogma-vdb-mcp
+```
+
+Requires an ONNX Cross-Encoder model:
+```bash
+export DOGMA_RERANK_MODEL_PATH="models/bge-reranker-base/model.onnx"
+export DOGMA_RERANK_TOKENIZER_PATH="models/bge-reranker-base/tokenizer.json"
+```
+
+### Claude Desktop integration
+
+```json
+{
+  "mcpServers": {
+    "dogma-vdb": {
+      "command": "/path/to/dogma-vdb/target/release/dogma-vdb-mcp"
+    }
+  }
+}
+```
+
+**Note**: Currently stdio transport only. HTTP/WebSocket support is planned.
 
 ---
 
@@ -250,8 +333,7 @@ sq_rescore = false
 
 ```bash
 cargo check --workspace
-cargo test          # 202 tests
-cargo test --features chunker-syntax  # 202 + tree-sitter tests
+cargo test          # 192 tests
 cargo clippy --all-targets
 cargo fmt --check
 cargo run --release --bin dogma-vdb-benchmarks 2>/dev/null || echo "(benchmarks need data)"
