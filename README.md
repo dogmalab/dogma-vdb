@@ -2,7 +2,7 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: Beta — core compiles, **192 tests pass**, SIMD-accelerated,
+**Status**: v1.0 Beta — core compiles, **192 tests pass**, SIMD-accelerated,
 binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
 CLI, MCP server, file watcher, FastEmbed ONNX integration,
 Cross-Encoder reranking pipeline, **SmartChunker with 3 strategies**.
@@ -116,22 +116,22 @@ let chunks = chunker.chunk_text(long_essay, ChunkStrategy::Paragraph);
 |-----------|:-----------:|:-----------:|:----------:|:---------:|:----------:|
 | Runtime | **Binary** (native) | Python 300 MB | Pip + Arrow | Docker | C library |
 | Deps (core) | **3** | ~200 | ~150 | ~100 | **0** |
-| Formato | **JSONL + Bin v2** | SQLite+Parquet | Lance columnar | Binario | Binario |
+| Format | **JSONL + Bin v2** | SQLite+Parquet | Lance columnar | Binary | Binary |
 | Async | **No** (sync) | Sync API | Tokio | Tokio | **No** |
-| MCP nativo | ✅ **Sí** | ❌ | ❌ | ❌ | ❌ |
-| Chunking | ✅ 7 estrategias | ❌ split_text | ❌ | ❌ | ❌ |
+| Native MCP | ✅ **Yes** | ❌ | ❌ | ❌ | ❌ |
+| Chunking | ✅ 7 strategies | ❌ split_text | ❌ | ❌ | ❌ |
 | mmap ~0ms | ✅ MmapBacked | ❌ | ✅ Lance | ❌ | ❌ |
-| SQ ortogonal | ✅ Cualquier backend | ❌ | ❌ | ❌ | ❌ |
+| Orthogonal SQ | ✅ Any backend | ❌ | ❌ | ❌ | ❌ |
 | Reranking | ✅ Cross-Encoder | ❌ | ❌ | ❌ | ❌ |
 
 | Bench (5K/128d) | dogma-vdb HNSW | ChromaDB | Qdrant |
 |:----------------|:--------------:|:--------:|:------:|
 | Query (μs) | **77** | ~4,000 | ~200 |
 | RAM 5K docs | ~3 MB | ~50 MB | ~8 MB |
-| Carga fría | **~0 ms** (mmap) | ~250 ms | ~100 ms |
+| Cold load | **~0 ms** (mmap) | ~250 ms | ~100 ms |
 | Recall@10 | **100%** | ~95% | ~99% |
 
-> dogma-vdb es a las vector DBs lo que **SQLite** es a las relacionales: embebido, zero-config, debuggeable con herramientas UNIX.
+> dogma-vdb is to vector DBs what **SQLite** is to relational databases: embedded, zero-config, debuggable with UNIX tools.
 
 ## Quick Start
 
@@ -354,4 +354,8 @@ cargo run --release --bin dogma-vdb-benchmarks 2>/dev/null || echo "(benchmarks 
 
 ## License
 
-MIT OR Apache-2.0
+MIT — see [LICENSE-MIT](LICENSE-MIT).
+
+## Author
+
+**Argimiro Gil** — [github.com/arggil](https://github.com/arggil) — Creator and maintainer of the Dogma ecosystem.
