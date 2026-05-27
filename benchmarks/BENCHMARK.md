@@ -1,21 +1,20 @@
 # dogma-vdb — Benchmark Grid Results
 
-> Generado automaticamente | Vectores 128-dim | Cosine | k=10 | 50 queries/config
+> Auto-generated | 128-dim vectors | Cosine | k=10 | 50 queries/config
 
-## Parametros del Grid
+## Grid Parameters
 
-- Tamaños: [10000]
-- Dimensiones: [128]
-- Metricas: ["Cosine"]
+- Sizes: [10000]
+- Dimensions: [128]
+- Metrics: ["Cosine"]
 - HNSW grid: M∈[16, 32], ef∈[50, 100, 150, 200]
 - IVF-PQ grid: nlist∈[256], M_sub∈[8]
-- Queries por configuracion: 50
+- Queries per configuration: 50
 
 ---
 ## 10000 docs, 128 dim, Cosine
 
-
-### Construccion: Build Time / Throughput / RAM
+### Construction: Build Time / Throughput / RAM
 
 | Index | Build | vec/s | RAM (MB) |
 |-------|-------|-------|----------|
@@ -34,7 +33,6 @@
 | IVF-PQ nlist=256 M=8 probe=8 | 8.6s | 1K | 0.0 |
 | IVF-PQ nlist=256 M=8 probe=16 | 8.5s | 1K | 0.0 |
 | IVF-PQ nlist=256 M=8 probe=32 | 9.1s | 1K | 0.0 |
-
 
 ### Precision: Recall@K (vs BruteForce)
 
@@ -56,8 +54,7 @@
 | IVF-PQ nlist=256 M=8 probe=16 | 0% | 0% | 26% |
 | IVF-PQ nlist=256 M=8 probe=32 | 0% | 0% | 22% |
 
-
-### Rendimiento: Latencia de Consulta
+### Performance: Query Latency
 
 | Index | Mean | p50 | p95 | p99 |
 |-------|------|-----|-----|-----|
@@ -76,7 +73,6 @@
 | IVF-PQ nlist=256 M=8 probe=8 | 177 us | 171 us | 228 us | 259 us |
 | IVF-PQ nlist=256 M=8 probe=16 | 261 us | 228 us | 406 us | 1.1 ms |
 | IVF-PQ nlist=256 M=8 probe=32 | 305 us | 295 us | 367 us | 416 us |
-
 
 ### Sweet Spot: Recall@10 vs QPS vs RAM
 
@@ -99,9 +95,9 @@
 
 #### Sweet Spot
 
-- Mejor configuracion (Recall≥85%): **HNSW M=16 ef=50** — QPS=3K, Latencia=364 us, RAM=8.9 MB
-- Mas rapido (Recall≥50%): **HNSW M=16 ef=50** — 364 us us, Recall@10=100%
-- Menor RAM (Recall≥50%): **HNSW M=16 ef=150** — 0.0 MB, Recall@10=100%
+- Best configuration (Recall≥85%): **HNSW M=16 ef=50** — QPS=3K, Latency=364 us, RAM=8.9 MB
+- Fastest (Recall≥50%): **HNSW M=16 ef=50** — 364 us, Recall@10=100%
+- Lowest RAM (Recall≥50%): **HNSW M=16 ef=150** — 0.0 MB, Recall@10=100%
 
 ---
-*Benchmark generado con dogma-vdb grid benchmark*
+*Benchmark generated with dogma-vdb grid benchmark*

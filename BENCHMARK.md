@@ -1,21 +1,21 @@
 # dogma-vdb — Benchmark Grid Results
 
-> Generado automaticamente | Vectores 128-dim | Cosine | k=10 | 100 queries/config
+> Auto-generated | 128-dim vectors | Cosine | k=10 | 100 queries/config
 
-## Parametros del Grid
+## Grid Parameters
 
-- Tamaños: [100000]
-- Dimensiones: [384]
-- Metricas: ["Cosine"]
+- Sizes: [100000]
+- Dimensions: [384]
+- Metrics: ["Cosine"]
 - HNSW grid: M∈[16], ef∈[50, 200]
 - IVF-PQ grid: nlist∈[256], M_sub∈[16]
-- Queries por configuracion: 100
+- Queries per config: 100
 
 ---
 ## 100000 docs, 384 dim, Cosine
 
 
-### Construccion: Build Time / Throughput / RAM
+### Construction: Build Time / Throughput / RAM
 
 | Index | Build | vec/s | RAM (MB) |
 |-------|-------|-------|----------|
@@ -35,7 +35,7 @@
 | IVF-PQ nlist=256 M=16 | 0% | 20% | 7% |
 
 
-### Rendimiento: Latencia de Consulta
+### Performance: Query Latency
 
 | Index | Mean | p50 | p95 | p99 |
 |-------|------|-----|-----|-----|
@@ -55,8 +55,8 @@
 
 #### Sweet Spot
 
-- Mas rapido (Recall≥50%): **HNSW M=16 ef=200** — 2.1 ms us, Recall@10=70%
-- Menor RAM (Recall≥50%): **BF** — 11.5 MB, Recall@10=100%
+- Fastest (Recall≥50%): **HNSW M=16 ef=200** — 2.1 ms, Recall@10=70%
+- Lowest RAM (Recall≥50%): **BF** — 11.5 MB, Recall@10=100%
 
 ---
-*Benchmark generado con dogma-vdb grid benchmark*
+*Benchmark generated with dogma-vdb grid benchmark*

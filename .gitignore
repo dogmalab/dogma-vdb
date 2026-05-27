@@ -18,3 +18,6 @@ Thumbs.db
 # Temp
 *.vdb
 *.vdb.tmp
+
+# Agent artifacts
+/.hermes/

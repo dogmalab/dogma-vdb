@@ -1,18 +1,18 @@
 # Architecture — dogma-vdb
 
-## 1. Principios Arquitectonicos
+## 1. Architectural Principles
 
-1. **1 archivo Rust = 1 componente**. Cada componente tiene responsabilidad unica.
-2. **Index trait como frontera**. Backends son intercambiables via Box<dyn Index>.
-3. **SQ es ortogonal**. No cambia la API, solo el storage/distance.
-4. **VectorStorage desacopla vectores de indices**. Los backends reciben
-   embeddings contiguos inyectados, sin saber su origen (RAM o mmap).
-5. **Sin dependencias externas para algoritmos core**. HNSW, IVF-PQ, SQ son Rust puro.
-6. **Config-driven**. Todo parametro via config.toml, no hardcode.
+1. **1 Rust file = 1 component**. Each component has a single responsibility.
+2. **Index trait as boundary**. Backends are interchangeable via Box<dyn Index>.
+3. **SQ is orthogonal**. It doesn't change the API, only the storage/distance.
+4. **VectorStorage decouples vectors from indices**. Backends receive
+   injected contiguous embeddings, without knowing their origin (RAM or mmap).
+5. **No external dependencies for core algorithms**. HNSW, IVF-PQ, SQ are pure Rust.
+6. **Config-driven**. Everything parameterized via config.toml, no hardcoding.
 
 ---
 
-## 2. Diagrama de Arquitectura
+## 2. Architecture Diagram
 
 ```
                          Collection
@@ -24,21 +24,21 @@
              |               |              |
              +-- SQ? --------+-- SQ? -------+-- SQ?
              |               |              |
-        Arc<dyn VectorStorage> (compartido)
+        Arc<dyn VectorStorage> (shared)
           /               \
    MemoryBacked      MmapBacked
    (Vec<f32>)        (memmap2)
 
-  BinStorage (persistencia JSONL + binario v2)
+  BinStorage (persistence JSONL + binary v2)
 ```
 
-**SQ**: cuando `sq=true`, cada backend usa `score_i8()` con scale/bias
-por documento. El grafo/topologia se construye con f32 original, la
-busqueda puede usar i8 con rescore opcional.
+**SQ**: when `sq=true`, each backend uses `score_i8()` with scale/bias
+per document. The graph/topology is built with original f32, the
+search can use i8 with optional rescore.
 
 ---
 
-## 3. Estructura de Archivos
+## 3. File Structure
 
 ```text
 src/
@@ -77,160 +77,160 @@ src/
 
 ## 4. SQ — Scalar Quantization
 
-### 4.1. Algoritmo de Cuantizacion (corregido)
+### 4.1. Quantization Algorithm (corrected)
 
-Para cada embedding `v` de dimension `d`:
+For each embedding `v` of dimension `d`:
 
-1. Calcular `min_d` y `max_d` **por documento** (no global).
-2. `midpoint = (max_d + min_d) / 2.0` (bias centrado en el rango).
+1. Compute `min_d` and `max_d` **per document** (not global).
+2. `midpoint = (max_d + min_d) / 2.0` (bias centered in the range).
 3. `scale = (max_d - min_d) / 255.0`.
 4. `v_i8[i] = clamp(round((v[i] - bias) / scale), -128, 127)`.
 
-El midpoint como bias reemplaza al `min` anterior, garantizando que
-valores cercanos a 0 se mapeen correctamente al rango i8 simetrico.
+The midpoint as bias replaces the previous `min`, guaranteeing that
+values close to 0 are correctly mapped to the symmetric i8 range.
 
-### 4.2. Distancia en i8
+### 4.2. Distance in i8
 
 ```
-dot_i8(a_i8, b_i8) = sum_i(a_i8[i] * b_i8[i])  // escala lineal
+dot_i8(a_i8, b_i8) = sum_i(a_i8[i] * b_i8[i])  // linear scale
 ```
 
-Para busqueda ANN donde solo importa el ranking, los factores constantes
-de escala no afectan el orden.
+For ANN search where only the ranking matters, the constant
+scale factors do not affect the order.
 
-### 4.3. Rescoring (opcional)
+### 4.3. Rescoring (optional)
 
-Para recuperar precision, despues de obtener top-k con i8, rescorear
-los k*2 con f32 original. Esto anade ~20% overhead pero mejora recall
-de 40% → 90% en HNSW+SQ.
+To recover precision, after obtaining top-k with i8, rescore
+the top-k*2 with original f32. This adds ~20% overhead but improves recall
+from 40% → 90% in HNSW+SQ.
 
-### 4.4. Integracion por Backend
+### 4.4. Integration by Backend
 
-**BruteForce + SQ**: iterar embedding_i8, compute dot_i8, ordenar.
-Si rescore=true, tomar top-k*2, rescore con f32.
+**BruteForce + SQ**: iterate embedding_i8, compute dot_i8, sort.
+If rescore=true, take top-k*2, rescore with f32.
 
-**HNSW + SQ**: El grafo se construye con distancia f32 original
-(garantiza topologia correcta). `search_layer()` usa `score_i8()`.
-Con rescore: top-k*2 candidatos → rescore f32. Recall: 90%.
+**HNSW + SQ**: The graph is built with original f32 distance
+(guarantees correct topology). `search_layer()` uses `score_i8()`.
+With rescore: top-k*2 candidates → f32 rescore. Recall: 90%.
 
-**IVF-PQ + SQ**: Los centroides K-Means se calculan en f32. La
-asignacion a clusters y la distancia asimetrica se hace en f32.
-SQ es ortogonal adicional sobre los codigos PQ.
+**IVF-PQ + SQ**: K-Means centroids are computed in f32. The
+cluster assignment and asymmetric distance are done in f32.
+SQ is an additional orthogonal layer on top of PQ codes.
 
-### 4.5. Donde vive SQ
+### 4.5. Where SQ Lives
 
-En `src/index/sq.rs`:
+In `src/index/sq.rs`:
 
 ```rust
-/// Cuantizar un embedding f32 a i8 con escala por documento.
+/// Quantize an f32 embedding to i8 with per-document scale.
 pub fn quantize(embedding: &[f32], scale: f32, bias: f32) -> Vec<i8>;
 
-/// Cuantizar el query para busqueda con i8.
+/// Quantize the query for i8 search.
 pub fn quantize_query(query: &[f32], scale: f32, bias: f32) -> Vec<i8>;
 
-/// Producto punto en i8 (SIMD-friendly).
+/// Dot product in i8 (SIMD-friendly).
 pub fn dot_i8(a: &[i8], b: &[i8]) -> i32;
 
-/// Score i8 convertido a f32.
+/// i8 score converted to f32.
 pub fn score_i8(query_i8: &[i8], doc_i8: &[i8], scale: f32, bias: f32) -> f32;
 
-/// Recalcular score exacto con f32 para rescoring.
+/// Recalculate exact score with f32 for rescoring.
 pub fn rescore(query: &[f32], docs: &[&Document], metric: Metric) -> Vec<ScoredDocument>;
 ```
 
-No es un index ni un wrapper — es un modulo de utilidades. Cada backend
-lo usa cuando `sq=true`.
+It is not an index or a wrapper — it is a utility module. Each backend
+uses it when `sq=true`.
 
 ---
 
 ## 5. IVF-PQ — Inverted File + Product Quantization
 
-### 5.1. Estructura de Datos
+### 5.1. Data Structure
 
 ```rust
 pub struct IvfPqIndex {
     documents: Vec<Document>,       // metadata, text, embedding (f32)
-    centroids: Vec<Vec<f32>>,       // n_list centroides K-Means (f32)
-    pq_codebook: Vec<Vec<Vec<f32>>>, // m_subspaces sub-codebooks (256 x (d/m) c/u)
-    codes: Vec<Vec<u8>>,            // codigos PQ por documento (m_subspaces bytes c/u)
-    assignments: Vec<usize>,        // asignacion cluster por documento
+    centroids: Vec<Vec<f32>>,       // n_list K-Means centroids (f32)
+    pq_codebook: Vec<Vec<Vec<f32>>>, // m_subspaces sub-codebooks (256 x (d/m) each)
+    codes: Vec<Vec<u8>>,            // PQ codes per document (m_subspaces bytes each)
+    assignments: Vec<usize>,        // cluster assignment per document
     config: IvfPqConfig,
-    storage: Arc<dyn VectorStorage>, // embeddings contiguos compartidos
+    storage: Arc<dyn VectorStorage>, // shared contiguous embeddings
 }
 
 pub struct IvfPqConfig {
-    pub n_list: usize,               // numero de centroides (default: 100)
-    pub m_subspaces: usize,          // numero de subvectores (default: 32, multiplo de 8)
-    pub n_probe: usize,              // clusters a explorar (default: 5)
+    pub n_list: usize,               // number of centroids (default: 100)
+    pub m_subspaces: usize,          // number of sub-vectors (default: 32, multiple of 8)
+    pub n_probe: usize,              // clusters to explore (default: 5)
     pub metric: Metric,
-    pub rerank_enabled: bool,        // auto-tuning: reduce n_probe a la mitad
+    pub rerank_enabled: bool,        // auto-tuning: reduces n_probe by half
 }
 ```
 
-### 5.2. Algoritmo de Build (batch)
+### 5.2. Build Algorithm (batch)
 
 ```
 fn build(docs: &[Document]) -> IvfPqIndex:
-    1. K-Means sobre todos los embeddings (max 20 iteraciones):
-       a. Inicializar nlist centroides con k-means++
-       b. Asignar cada embedding al centroide mas cercano
-       c. Recalcular centroides como promedio de sus puntos
-       d. Repetir hasta convergencia o max iter
+    1. K-Means over all embeddings (max 20 iterations):
+       a. Initialize nlist centroids with k-means++
+       b. Assign each embedding to the nearest centroid
+       c. Recompute centroids as the average of their points
+       d. Repeat until convergence or max iterations
 
     2. Product Quantization:
-       a. Para cada dimension del embedding, dividir en m subvectores
-          de tamano d/m
-       b. Para cada subespacio, ejecutar K-Means con 256 centroides
-          (codebook del subvector)
-       c. Para cada documento, codificar cada subvector como el indice
-          u8 del centroide mas cercano en ese subespacio
+       a. For each embedding dimension, divide into m sub-vectors
+          of size d/m
+       b. For each subspace, run K-Means with 256 centroids
+          (sub-vector codebook)
+       c. For each document, encode each sub-vector as the index
+          u8 of the nearest centroid in that subspace
 
-    3. Almacenar: centroides (f32), pq_codebook (f32), codes (u8),
+    3. Store: centroids (f32), pq_codebook (f32), codes (u8),
        assignments (usize)
 ```
 
-### 5.3. Busqueda
+### 5.3. Search
 
 ```
 fn search(query, k) -> Vec<ScoredDocument>:
-    1. Calcular distancia del query a todos los nlist centroides.
-       Seleccionar los nprobe mas cercanos.
+    1. Compute query distance to all nlist centroids.
+       Select the nprobe nearest ones.
 
-    2. Para cada uno de los nprobe clusters:
-       a. Precomputar tabla de distancias (LUT) entre query y los
-          256 centroides de cada subespacio PQ.
-       b. Escanear los codigos u8 de los documentos en ese cluster:
-          distancia_aprox = sum_m(LUT[m][code[m]])
-       c. Mantener top-k global con min-heap.
+    2. For each of the nprobe clusters:
+       a. Precompute distance table (LUT) between query and the
+          256 centroids of each PQ subspace.
+       b. Scan the u8 codes of the documents in that cluster:
+          approx_distance = sum_m(LUT[m][code[m]])
+       c. Keep global top-k with min-heap.
 
-    3. Ordenar candidatos por distancia, devolver top-k.
+    3. Sort candidates by distance, return top-k.
 ```
 
-### 5.4. Complejidad
+### 5.4. Complexity
 
-| Operacion | Complejidad |
-|-----------|-------------|
+| Operation | Complexity |
+|-----------|------------|
 | Build (K-Means) | O(n_list · n · d · iter) |
 | Build (PQ) | O(256 · m_subspaces · (d/m_subspaces) · n) = O(256 · d · n) |
 | Search | O(n_list · d + effective_probe · (n/n_list) · m_subspaces) |
 
-donde `effective_probe = n_probe` si `rerank_enabled=false`, o
-`(n_probe / 2).max(2)` si `rerank_enabled=true`.
+where `effective_probe = n_probe` if `rerank_enabled=false`, or
+`(n_probe / 2).max(2)` if `rerank_enabled=true`.
 
-### 5.5. Memoria
+### 5.5. Memory
 
-Para 5K docs 128-dim, n_list=100, m_subspaces=32:
-- Centroides: 100 × 128 × 4B = 51 KB
+For 5K docs 128-dim, n_list=100, m_subspaces=32:
+- Centroids: 100 × 128 × 4B = 51 KB
 - PQ codebook: 32 × 256 × (128/32) × 4B = 128 KB
 - Codes: 5K × 32B = 160 KB
-- Asignaciones: 5K × 8B = 40 KB
-- **Total: ~380 KB** (~8× menos que HNSW/BF)
+- Assignments: 5K × 8B = 40 KB
+- **Total: ~380 KB** (~8× less than HNSW/BF)
 
 ---
 
 ## 6. VectorStorage Trait
 
-### 6.1. Definicion
+### 6.1. Definition
 
 ```rust
 pub trait VectorStorage: Send + Sync {
@@ -242,7 +242,7 @@ pub trait VectorStorage: Send + Sync {
 }
 ```
 
-### 6.2. Implementaciones
+### 6.2. Implementations
 
 **MemoryBackedStorage**:
 ```rust
@@ -250,26 +250,26 @@ pub struct MemoryBackedStorage {
     data: Vec<u8>,
 }
 ```
-- Vec<u8> contiguo en RAM (embeddings f32 reinterpretados vía `as_embeddings()`).
-- `as_embeddings()` devuelve `&[f32]` via `unsafe { from_raw_parts() }` (aislado, auditado).
-- `from_f32_slice()`: construye desde `&[f32]` (copia).
-- Para tests, pipelines volátiles, warm cache.
+- Contiguous `Vec<u8>` in RAM (f32 embeddings reinterpreted via `as_embeddings()`).
+- `as_embeddings()` returns `&[f32]` via `unsafe { from_raw_parts() }` (isolated, audited).
+- `from_f32_slice()`: constructs from `&[f32]` (copy).
+- For tests, volatile pipelines, warm cache.
 
 **MmapBackedStorage**:
 ```rust
 pub struct MmapBackedStorage {
-    _file: std::fs::File,    // mantiene fd vivo
-    mmap: memmap2::Mmap,     // mapping de todo el archivo
+    _file: std::fs::File,    // keeps fd alive
+    mmap: memmap2::Mmap,     // mapping of the entire file
 }
 ```
-- Carga ~0ms: el OS pagea bajo demanda.
-- Formato binario v2 con padding 32-byte.
-- `as_embeddings()` reinterpreta los bytes mapeados como `&[f32]`.
-- `advise(Advice::Random)` para eliminar readahead page faults.
-- ⚠️ SIGBUS: si un proceso externo trunca el archivo, el kernel mata
-  el proceso. Documentado en el código.
+- Loads ~0ms: the OS pages on demand.
+- Binary v2 format with 32-byte padding.
+- `as_embeddings()` reinterprets the mapped bytes as `&[f32]`.
+- `advise(Advice::Random)` to eliminate readahead page faults.
+- ⚠️ SIGBUS: if an external process truncates the file, the kernel kills
+  the process. Documented in code.
 
-### 6.3. Integracion en Collection
+### 6.3. Integration in Collection
 
 ```rust
 pub struct Collection {
@@ -281,7 +281,7 @@ pub struct Collection {
 }
 
 fn open(path) -> Result<Self> {
-    let storage = BinStorage::load(path)?;       // leer metadata + docs
+    let storage = BinStorage::load(path)?;       // read metadata + docs
     let emb_storage = match config.use_mmap {
         true => MmapBackedStorage::new(path)?,
         false => MemoryBackedStorage::from_docs(&storage.documents),
@@ -297,17 +297,17 @@ fn open(path) -> Result<Self> {
 
 ---
 
-## 7. Flat Embeddings en HNSW
+## 7. Flat Embeddings in HNSW
 
 ### 7.1. Storage
 
 ```rust
 pub struct HnswIndex {
     documents: Vec<Document>,       // metadata, text
-    embeddings_flat: Vec<f32>,      // solo si flat_embeddings=true
-    dim: usize,                     // solo si flat_embeddings=true
-    storage: Arc<dyn VectorStorage>, // embeddings contiguos (siempre presente)
-    // ... resto igual
+    embeddings_flat: Vec<f32>,      // only if flat_embeddings=true
+    dim: usize,                     // only if flat_embeddings=true
+    storage: Arc<dyn VectorStorage>, // contiguous embeddings (always present)
+    // ... rest same
 }
 ```
 
@@ -324,26 +324,26 @@ fn embedding(&self, node_id: usize) -> &[f32] {
 }
 ```
 
-### 7.3. Insercion
+### 7.3. Insertion
 
-Cuando `flat_embeddings=true`, insert_one() hace:
-1. Extiende `embeddings_flat` con el nuevo embedding.
-2. El embedding tambien vive en `storage` (VectorStorage compartido).
+When `flat_embeddings=true`, insert_one() does:
+1. Extends `embeddings_flat` with the new embedding.
+2. The embedding also lives in `storage` (shared VectorStorage).
 
-Decision de diseno: flat_embeddings es solo para busqueda en memoria.
-El formato binario siempre guarda embedding f32 completo (portabilidad).
+Design decision: flat_embeddings is only for in-memory search.
+The binary format always stores the full f32 embedding (portability).
 
-### 7.4. Delete con Flat
+### 7.4. Delete with Flat
 
-Cuando se elimina un documento con flat, hay que reconstruir
-`embeddings_flat` desde los documents restantes (coste O(n·d) una vez,
-equivalente a lo que ya hace el rebuild del grafo en delete).
+When a document is deleted with flat, `embeddings_flat` must be rebuilt
+from the remaining documents (O(n·d) cost once, equivalent to what the
+graph rebuild in delete already does).
 
 ---
 
-## 8. Estrategia de Factory
+## 8. Factory Strategy
 
-En `index/mod.rs`:
+In `index/mod.rs`:
 
 ```rust
 fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<dyn Index> {
@@ -353,16 +353,16 @@ fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<d
         _ => Box::new(BruteForceIndex::new(metric, storage)),
     };
 
-    // SQ no es un wrapper — cada backend recibe el flag sq
-    // y actua en consecuencia en sus metodos search/insert.
+    // SQ is not a wrapper — each backend receives the sq flag
+    // and acts accordingly in its search/insert methods.
 }
 ```
 
 ---
 
-## 9. Dependencias
+## 9. Dependencies
 
-### Actuales
+### Current
 - serde, serde_json, thiserror — core
 - rayon — parallel BruteForce
 - toml, once_cell, log — config
@@ -372,17 +372,17 @@ fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<d
 - regex-lite — smart chunker patterns
 - notify, crossbeam-channel — watcher (feature)
 
-### Sin dependencias externas para algoritmos core
-- HNSW: SplitMix64 (ya implementado en core)
-- IVF-PQ: K-Means y PQ son Rust puro (stdlib)
-- SQ: Rust puro (stdlib)
+### No external dependencies for core algorithms
+- HNSW: SplitMix64 (already implemented in core)
+- IVF-PQ: K-Means and PQ are pure Rust (stdlib)
+- SQ: pure Rust (stdlib)
 
-### Opcionales
+### Optional
 - `rand` (dev-dependency)
 
 ---
 
-## 10. Metricas Objetivo
+## 10. Target Metrics
 
 | Backend | 5K docs 128-dim | 50K docs 768-dim | 100K docs 384-dim |
 |---------|:---------------:|:----------------:|:-----------------:|
@@ -391,78 +391,78 @@ fn build_index(cfg: &CollectionConfig, storage: Arc<dyn VectorStorage>) -> Box<d
 | IVF-PQ | 128 us | ~2 ms | ~4 ms |
 | HNSW+SQ+Rescore | 73 us | ~350 us | ~700 us |
 
-RAM estimada para 100K docs 384-dim:
+Estimated RAM for 100K docs 384-dim:
 - f32 embeddings: 100K × 384 × 4 = ~153 MB
-- HNSW graphs: ~200 MB adicional (conexiones)
-- IVF-PQ: ~1.5 MB (centroides + codebook + codes)
-- SQ i8: ~38 MB (solo i8, sin graphs)
+- HNSW graphs: ~200 MB additional (connections)
+- IVF-PQ: ~1.5 MB (centroids + codebook + codes)
+- SQ i8: ~38 MB (i8 only, no graphs)
 
 ---
 
-## 11. Prioridad de Implementacion Completada
+## 11. Implementation Priority Completed
 
-1. ~~**HNSW + flat_embeddings**~~ (completado)
-2. ~~**SQ module**~~ (completado)
-3. ~~**SQ integration** en BruteForce y HNSW~~ (completado, recall 90%)
-4. ~~**Annoy**~~ (reemplazado por IVF-PQ)
-5. ~~**IVF-PQ backend**~~ (completado, ~8× ahorro RAM)
-6. ~~**VectorStorage trait**~~ (completado, mmap ~0ms load)
-7. ~~**Benchmarks**~~ (actualizados)
+1. ~~**HNSW + flat_embeddings**~~ (completed)
+2. ~~**SQ module**~~ (completed)
+3. ~~**SQ integration** in BruteForce and HNSW~~ (completed, recall 90%)
+4. ~~**Annoy**~~ (replaced by IVF-PQ)
+5. ~~**IVF-PQ backend**~~ (completed, ~8× RAM savings)
+6. ~~**VectorStorage trait**~~ (completed, mmap ~0ms load)
+7. ~~**Benchmarks**~~ (updated)
 
 ---
 
-## 12. Enriquecimiento Futuro (Post-Beta)
+## 12. Future Enrichment (Post-Beta)
 
-### 12.1. Seguridad
+### 12.1. Security
 
-| Item | Prioridad | Descripcion |
-|------|:---------:|-------------|
-| MCP HTTP auth | Media | Seguridad para futura implementación HTTP del MCP server en crate separado |
-| File locking (fs2) | Media | Bloqueo OS-level para evitar SIGBUS por escritura concurrente |
-| Watcher path sandbox | Baja | Validar que `source_dirs` este dentro de un directorio base configurado |
-| Model checksum verification | Baja | Verificar checksum SHA256 de modelos ONNX descargados |
-| Audit CI hardening | Baja | Configurar `cargo audit` para fallar solo en vulnerabilidades reales |
+| Item | Priority | Description |
+|------|:--------:|-------------|
+| MCP HTTP auth | Medium | Security for future HTTP implementation of the MCP server in a separate crate |
+| File locking (fs2) | Medium | OS-level locking to prevent SIGBUS from concurrent writes |
+| Watcher path sandbox | Low | Validate that `source_dirs` is within a configured base directory |
+| Model checksum verification | Low | Verify SHA256 checksum of downloaded ONNX models |
+| Audit CI hardening | Low | Configure `cargo audit` to fail only on real vulnerabilities |
 
-### 12.2. Rendimiento y Escalabilidad
+### 12.2. Performance and Scalability
 
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **Parallel IVF-PQ build** | Alto | Paralelizar K-Means y PQ build con rayon. ~1 sesion |
-| **SIMD para PQ lookup** | Medio | Acelerar distancia asimetrica con SIMD (wide crate) |
-| **HNSW parallel insert** | Medio | Batch insert con lock-free grafo. ~2 sesiones |
-| **Multi-index search** | Bajo | Buscar en HNSW + IVF-PQ y fusionar resultados |
+| Item | Impact | Description |
+|------|:------:|-------------|
+| **Parallel IVF-PQ build** | High | Parallelize K-Means and PQ build with rayon. ~1 session |
+| **SIMD for PQ lookup** | Medium | Accelerate asymmetric distance with SIMD (wide crate) |
+| **HNSW parallel insert** | Medium | Batch insert with lock-free graph. ~2 sessions |
+| **Multi-index search** | Low | Search in HNSW + IVF-PQ and merge results |
 
-### 12.3. Formatos y Portabilidad
+### 12.3. Formats and Portability
 
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **Formato Parquet** | Medio | Export a Apache Parquet para interoperabilidad con data science |
-| **Import desde ChromaDB/LanceDB** | Medio | Script de migracion desde otros formatos de vectores |
-| **Compresion zstd en binario** | Bajo | Compresion opcional zstd para el formato binario v3 |
+| Item | Impact | Description |
+|------|:------:|-------------|
+| **Parquet format** | Medium | Export to Apache Parquet for data science interoperability |
+| **Import from ChromaDB/LanceDB** | Medium | Migration script from other vector formats |
+| **zstd compression in binary** | Low | Optional zstd compression for binary v3 format |
 
-### 12.4. Integraciones
+### 12.4. Integrations
 
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **Python bindings (PyO3)** | Alto | `pip install dogma-vdb` con API Python completa. ~3-4 sesiones |
-| **LangChain VectorStore nativo** | Alto | Provider Python que implementa VectorStore de LangChain usando MCP subprocess |
-| **Embedding models adicionales** | Medio | Soportar modelos ONNX distintos a MiniLM-L6-v2 (BGE, GTE, etc.) |
-| **Llamarada / mistral.rs** | Medio | Embedding via llama.cpp para modelos locales |
+| Item | Impact | Description |
+|------|:------:|-------------|
+| **Python bindings (PyO3)** | High | `pip install dogma-vdb` with full Python API. ~3-4 sessions |
+| **Native LangChain VectorStore** | High | Python provider implementing LangChain VectorStore using MCP subprocess |
+| **Additional embedding models** | Medium | Support ONNX models other than MiniLM-L6-v2 (BGE, GTE, etc.) |
+| **Llamarada / mistral.rs** | Medium | Embedding via llama.cpp for local models |
 
-### 12.5. Operaciones
+### 12.5. Operations
 
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **CRUD update eficiente** | Medio | Actualmente delete+insert reescribe todo. Hacer update in-place |
-| **Snapshot / versionado** | Bajo | Mantener N versiones anteriores del .vdb para rollback |
-| **CLI en REPL** | Bajo | Modo interactivo para explorar colecciones desde terminal |
-| **Estadisticas de coleccion** | Bajo | Reportar distribucion de vectores, outliers, clustering |
+| Item | Impact | Description |
+|------|:------:|-------------|
+| **Efficient CRUD update** | Medium | Currently delete+insert rewrites everything. Make update in-place |
+| **Snapshot / versioning** | Low | Keep N previous versions of the .vdb for rollback |
+| **CLI REPL** | Low | Interactive mode to explore collections from terminal |
+| **Collection statistics** | Low | Report vector distribution, outliers, clustering |
 
-### 12.6. Testing y CI
+### 12.6. Testing and CI
 
-| Item | Impacto | Descripcion |
-|------|:-------:|-------------|
-| **Fuzz testing** | Medio | Fuzzing de entrada de datos (embeddings malformados, metadata corrupta) |
-| **Benchmarks en CI** | Bajo | Ejecutar bench.rs en CI y comparar con commit anterior |
-| **Test de integracion MCP** | Bajo | Test E2E que inicia MCP server, conecta, hace queries |
-| **Proptest para indices** | Bajo | Test propiedad: search(k) siempre devuelve <= k resultados |
+| Item | Impact | Description |
+|------|:------:|-------------|
+| **Fuzz testing** | Medium | Fuzzing of data input (malformed embeddings, corrupt metadata) |
+| **Benchmarks in CI** | Low | Run bench.rs in CI and compare with previous commit |
+| **MCP integration test** | Low | E2E test that starts MCP server, connects, runs queries |
+| **Proptest for indices** | Low | Property test: search(k) always returns <= k results |

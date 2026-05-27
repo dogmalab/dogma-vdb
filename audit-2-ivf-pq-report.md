@@ -1,47 +1,47 @@
-# Informe: IVF-PQ + Eliminación de Annoy
+# Report: IVF-PQ + Annoy Removal
 
-**Fecha:** 2026-05-17
+**Date:** 2026-05-17
 
 ---
 
-## Resumen de Cambios
+## Changes Summary
 
-### ✅ Nuevo: IVF-PQ Index
+### ✅ New: IVF-PQ Index
 
-**Archivo creado:** `src/index/ivf_pq.rs` (~400 líneas)
+**File created:** `src/index/ivf_pq.rs` (~400 lines)
 
-| Componente | Descripción |
+| Component | Description |
 |---|---|
-| `IvfPqConfig` | K clusters (256), M subvectores (8), n_probe (8), metric |
-| `kmeans()` | Helper determinista, random init, 20 iteraciones max |
-| `IvfPqIndex::build_index()` | Entrena IVF (K-Means) + PQ (M codebooks de 256 centroides) |
-| `IvfPqIndex::search()` | Top n_probe clusters + tablas lookup asimétricas [M×256] |
+| `IvfPqConfig` | K clusters (256), M subvectors (8), n_probe (8), metric |
+| `kmeans()` | Deterministic helper, random init, 20 iterations max |
+| `IvfPqIndex::build_index()` | Trains IVF (K-Means) + PQ (M codebooks of 256 centroids each) |
+| `IvfPqIndex::search()` | Top n_probe clusters + asymmetric lookup tables [M×256] |
 | 8 tests | empty, single, batch, closest, skip, delete, sorted, recall |
 
-### ❌ Eliminado: Annoy Index
+### ❌ Removed: Annoy Index
 
-**Archivo eliminado:** `src/index/annoy.rs` (~530 líneas, 10 tests)
+**File deleted:** `src/index/annoy.rs` (~530 lines, 10 tests)
 
-**Razón:** Rendía peor que BruteForce en todos los benchmarks (3,258 us/query vs 1,505 us/query a 5K docs). No justificaba su complejidad.
+**Reason:** It performed worse than BruteForce in all benchmarks (3,258 us/query vs 1,505 us/query at 5K docs). It did not justify its complexity.
 
-### 🔧 Archivos modificados
+### 🔧 Modified files
 
-| Archivo | Cambio |
+| File | Change |
 |---------|--------|
-| `src/index/mod.rs` | +ivf_pq, -annoy, doc comment actualizado |
-| `src/collection.rs` | Match arm "ivf_pq" en open() y open_with() |
-| `src/config.rs` | 3 campos ivf_pq (n_clusters, n_subvectors, n_probe) + env vars |
+| `src/index/mod.rs` | +ivf_pq, -annoy, doc comment updated |
+| `src/collection.rs` | Match arm "ivf_pq" in open() and open_with() |
+| `src/config.rs` | 3 ivf_pq fields (n_clusters, n_subvectors, n_probe) + env vars |
 | `src/lib.rs` | Prelude: -Annoy +IvfPq |
 | `examples/bench.rs` | Annoy → IVF-PQ |
-| `AGENTS.md` | Estado actualizado |
+| `AGENTS.md` | Status updated |
 
 ---
 
-## Benchmark: IVF-PQ vs Resto
+## Benchmark: IVF-PQ vs Others
 
-Ejecutado con `cargo run --release --example bench` (128-dim random [-3,3], 100 queries, k=10).
+Executed with `cargo run --release --example bench` (128-dim random [-3,3], 100 queries, k=10).
 
-### Velocidad (us/query)
+### Speed (us/query)
 
 | Backend | 100 docs | 500 docs | 1K docs | 5K docs |
 |---------|:--------:|:--------:|:-------:|:-------:|
@@ -50,7 +50,7 @@ Ejecutado con `cargo run --release --example bench` (128-dim random [-3,3], 100 
 | **IVF-PQ** | 45 | 86 | 86 | **128** |
 | ~~Annoy~~ | 38 | 198 | 412 | 3,258 |
 
-### Recall (@10, contra BF exacto)
+### Recall (@10, against exact BF)
 
 | Backend | 100 docs | 500 docs | 1K docs | 5K docs |
 |---------|:--------:|:--------:|:-------:|:-------:|
@@ -60,50 +60,50 @@ Ejecutado con `cargo run --release --example bench` (128-dim random [-3,3], 100 
 
 ### Build time (5K docs)
 
-| Backend | Tiempo |
+| Backend | Time |
 |---------|:------:|
 | HNSW | 1.65s |
 | **IVF-PQ** | **2.01s** |
 | ~~Annoy~~ | 3ms |
 
-### Memory estimada (5K docs, 128-dim)
+### Estimated Memory (5K docs, 128-dim)
 
-| Backend | Memoria |
+| Backend | Memory |
 |---------|:-------:|
-| HNSW | ~2.5 MB (embeddings f32) |
-| **IVF-PQ** | **~300 KB** (códigos + centroides + codebooks) |
+| HNSW | ~2.5 MB (f32 embeddings) |
+| **IVF-PQ** | **~300 KB** (codes + centroids + codebooks) |
 | BruteForce | ~2.5 MB |
 
 ---
 
-## Análisis
+## Analysis
 
-**IVF-PQ gana en:** velocidad (11× vs BF), memoria (8× menos que HNSW).
+**IVF-PQ wins on:** speed (11× vs BF), memory (8× less than HNSW).
 
-**IVF-PQ pierde en:** recall (50% vs 100% de HNSW/BF). La PQ con solo 8 subvectores para 128-dim pierde mucha información.
+**IVF-PQ loses on:** recall (50% vs 100% for HNSW/BF). PQ with only 8 subvectors for 128-dim loses a lot of information.
 
-**Comparación con Annoy (eliminado):** IVF-PQ es **25× más rápido** (128 vs 3,258 us/query a 5K docs) y **mucho más memory-efficient**. El recall es inferior pero ajustable (más subvectores, más probe).
+**Comparison with Annoy (removed):** IVF-PQ is **25× faster** (128 vs 3,258 us/query at 5K docs) and **much more memory-efficient**. Recall is lower but adjustable (more subvectors, more probe).
 
-### Próximas optimizaciones posibles
+### Possible next optimizations
 
-| Técnica | Impacto esperado |
+| Technique | Expected Impact |
 |---------|:----------------:|
-| Aumentar n_probe (8→32) | +recall, -velocidad |
-| Más subvectores (8→16) | +recall, -velocidad (~2x codes) |
-| PQ codebook con cosine en vez de Euclidean | +recall |
-| IVF con k-means++ init | clusters más puros |
-| Rescore f32 en top candidates | +recall |
+| Increase n_probe (8→32) | +recall, -speed |
+| More subvectors (8→16) | +recall, -speed (~2x codes) |
+| PQ codebook with cosine instead of Euclidean | +recall |
+| IVF with k-means++ init | purer clusters |
+| f32 rescore on top candidates | +recall |
 
 ---
 
-## Estado del Proyecto
+## Project State
 
 ```
-156 tests, 0 fallos, 0 warnings
+156 tests, 0 failures, 0 warnings
 ```
 
-| Backends disponibles |
+| Available backends |
 |----------------------|
 | `bruteforce` (default) |
 | `hnsw` |
-| `ivf_pq` + SQ (ortogonal) |
+| `ivf_pq` + SQ (orthogonal) |

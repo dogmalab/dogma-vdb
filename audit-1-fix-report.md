@@ -1,72 +1,72 @@
-# Informe: Fix HNSW+SQ Recall
+# Report: Fix HNSW+SQ Recall
 
-**Fecha:** 2026-05-17
-**Auditoría:** audit-1-temp.md
+**Date:** 2026-05-17
+**Audit:** audit-1-temp.md
 **Plan:** .hermes/plans/2026-05-17_145000-fix-hnsw-sq-recall.md
 
 ---
 
-## Bugs Corregidos
+## Fixed Bugs
 
-### Bug #1 — Scale/bias de 1 documento en HNSW (src/index/hnsw.rs)
+### Bug #1 — Single-document scale/bias in HNSW (src/index/hnsw.rs)
 
-**Síntoma:** HNSW con `sq=true` cuantizaba usando scale/bias calculados del **primer documento solamente**.
+**Symptom:** HNSW with `sq=true` quantized using scale/bias computed from the **first document only**.
 
-**Causa:** En `insert_one()`, el bloque SQ usaba `let fake_docs = [doc.clone()]` para calcular scale/bias, ignorando el resto del dataset. Los documentos siguientes se cuantizaban con estos valores incorrectos y nunca se recalculaban.
+**Cause:** In `insert_one()`, the SQ block used `let fake_docs = [doc.clone()]` to compute scale/bias, ignoring the rest of the dataset. Subsequent documents were quantized with these incorrect values and were never recalculated.
 
-**Fix:** Se eliminó la cuantización de `insert_one()`. Se añadió post-cuantización en `insert()` que:
-1. Calcula scale/bias de **todos** los documentos (existentes + nuevos)
-2. Re-cuantiza todo el dataset con `par_iter()` (paralelo)
-3. Idéntico al approach de `BruteForceIndex` (probado)
+**Fix:** Removed quantization from `insert_one()`. Added post-quantization in `insert()` which:
+1. Computes scale/bias from **all** documents (existing + new)
+2. Re-quantizes the entire dataset with `par_iter()` (parallel)
+3. Identical to `BruteForceIndex` approach (proven)
 
-**Archivo:** `src/index/hnsw.rs`
-- Eliminadas líneas 372-383 (bloque SQ en `insert_one`)
-- Añadidas ~15 líneas en `insert()` (post-cuantización)
-- Añadido `use rayon::prelude::*`
+**File:** `src/index/hnsw.rs`
+- Removed lines 372-383 (SQ block in `insert_one`)
+- Added ~15 lines in `insert()` (post-quantization)
+- Added `use rayon::prelude::*`
 
-### Bug #2 — Fórmula de cuantización centrada (src/index/sq.rs)
+### Bug #2 — Centered quantization formula (src/index/sq.rs)
 
-**Síntoma:** Incluso con scale/bias correctos, el recall de SQ era bajo (~12% en test).
+**Symptom:** Even with correct scale/bias, SQ recall was low (~12% in tests).
 
-**Causa raíz:** La fórmula `bias = min` mapea el rango `[min, max] → [0, 255]`. Pero `i8` solo almacena `[-128, 127]`. Los valores > 127 se saturan a 127. Para embeddings normalizados (rango ~[-1, 1] o [-3, 3]), **todo valor por encima del punto medio se cuantiza al mismo valor máximo**, perdiendo media dimensión de información.
+**Root cause:** The formula `bias = min` maps the range `[min, max] → [0, 255]`. But `i8` only stores `[-128, 127]`. Values > 127 saturate to 127. For normalized embeddings (range ~[-1, 1] or [-3, 3]), **every value above the midpoint quantizes to the same maximum value**, losing half a dimension's worth of information.
 
 ```
-Antes:  q = (v - min) * 255/(max-min)    → [0, 255] → clamp a i8 → pérdida masiva
-Después: q = (v - mid) * 255/(max-min)    → [-128, 127] → encaja perfecto en i8
+Before:  q = (v - min) * 255/(max-min)    → [0, 255] → clamp to i8 → massive loss
+After:   q = (v - mid) * 255/(max-min)    → [-128, 127] → fits perfectly in i8
          mid = (min + max) / 2
 ```
 
-**Fix:** `compute_scale_bias_per_dim` ahora retorna el punto medio como bias.
+**Fix:** `compute_scale_bias_per_dim` now returns the midpoint as bias.
 
-**Archivo:** `src/index/sq.rs`
-- Línea 61: `(scales, mins)` → `(scales, biases)` con `bias = (min+max)/2`
-- Tests actualizados para nuevos valores de bias
+**File:** `src/index/sq.rs`
+- Line 61: `(scales, mins)` → `(scales, biases)` with `bias = (min+max)/2`
+- Tests updated for new bias values
 
-### Arreglos menores
-- Warning `unused variable: biases` eliminado (test en sq.rs)
-- `AGENTS.md` actualizado: 152 → 156 tests
+### Minor fixes
+- Removed warning `unused variable: biases` (test in sq.rs)
+- `AGENTS.md` updated: 152 → 156 tests
 
 ---
 
-## Resultados de Benchmark
+## Benchmark Results
 
-Ejecutado con `cargo run --release --example bench` (vectores 128-dim aleatorios [-3, 3], 100 queries).
+Executed with `cargo run --release --example bench` (128-dim random vectors [-3, 3], 100 queries).
 
-### Velocidad (5K docs, 128-dim)
+### Speed (5K docs, 128-dim)
 
-| Backend | us/query | vs Antes |
+| Backend | us/query | vs Before |
 |---------|:--------:|:--------:|
-| **HNSW (ef=50)** | **85** | igual |
-| **HNSW+SQ** | **73** | ~14% más rápido |
-| HNSW+SQ+Rescore | 79 | leve costo |
-| HNSW+Flat | 86 | igual |
-| BruteForce | 1,505 | igual |
-| BF+SQ | 1,529 | igual |
-| Annoy | 3,258 | igual |
+| **HNSW (ef=50)** | **85** | same |
+| **HNSW+SQ** | **73** | ~14% faster |
+| HNSW+SQ+Rescore | 79 | slight cost |
+| HNSW+Flat | 86 | same |
+| BruteForce | 1,505 | same |
+| BF+SQ | 1,529 | same |
+| Annoy | 3,258 | same |
 
-### Recall (5K docs, 128-dim, contra BruteForce exacto)
+### Recall (5K docs, 128-dim, against exact BruteForce)
 
-| Backend | Recall Antes | Recall **Después** | Mejora |
+| Backend | Recall Before | Recall **After** | Improvement |
 |---------|:------------:|:-------------------:|:------:|
 | **HNSW** | 100% | 100% | — |
 | **HNSW+SQ** | **0-60%** | **80%** | 🔥 |
@@ -75,31 +75,31 @@ Ejecutado con `cargo run --release --example bench` (vectores 128-dim aleatorios
 | BF+SQ | ~40% | 60% | ✅ |
 | BF+SQ+Rescore | ~90% | 90% | — |
 
-### Recall por tamaño de dataset (HNSW+SQ+Rescore)
+### Recall by dataset size (HNSW+SQ+Rescore)
 
-| Docs | Antes | **Después** |
+| Docs | Before | **After** |
 |:----:|:-----:|:-----------:|
 | 100 | ~0% | **100%** |
 | 500 | ~0% | **100%** |
 | 1,000 | ~0% | 40%* |
 | 5,000 | ~60% | **90%** |
 
-\* El caso 1K docs es un outlier: HNSW f32 sin SQ también da solo 80% con ef=50.
-   Con ef=200 el recall sube a ~99% en f32 y ~85% en SQ+Rescore.
+\* The 1K docs case is an outlier: HNSW f32 without SQ also only gives 80% with ef=50.
+   With ef=200 the recall rises to ~99% in f32 and ~85% in SQ+Rescore.
 
 ---
 
-## Estado Final
+## Final State
 
 ```
-156 tests, 0 fallos, 0 warnings
+156 tests, 0 failures, 0 warnings
 ```
 
-| Métrica | Antes | Después |
+| Metric | Before | After |
 |---------|:-----:|:-------:|
 | Tests | 152 | **156** |
 | Warnings | 1 | **0** |
 | HNSW+SQ recall (5K docs) | 0-60% | **80%** |
 | HNSW+SQ+Rescore (5K docs) | 0-60% | **90%** |
 | BF+SQ recall (5K docs) | ~40% | **60%** |
-| Líneas de código | ~30 | ~40 (+10) |
+| Lines of code | ~30 | ~40 (+10) |

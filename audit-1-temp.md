@@ -1,76 +1,76 @@
-# Auditoría Arquitectónica de dogma-vdb
+# Architectural Audit of dogma-vdb
 
-> Análisis técnico profundo de fortalezas, índices y oportunidades de mejora.
-
----
-
-## 💎 Fortalezas de Arquitectura y Diseño
-
-### 1. Ortogonalidad de SQ (Scalar Quantization)
-
-Hacer que SQ (i8) sea un módulo ortogonal que se puede aplicar sobre *cualquier* backend es una decisión de diseño brillante. Reducir la RAM ~4× manteniendo la estructura del backend base (como HNSW) es exactamente como operan los motores comerciales. El hecho de que ya soporte *rescoring* en f32 demuestra madurez arquitectónica.
-
-### 2. Dualidad JSONL / Binario (El balance perfecto)
-
-- **JSONL** te da la mejor experiencia de desarrollador (*DX*): legibilidad, debuggability con grep/awk, compatibilidad con Git y persistencia *append-only* en O(1).
-- **El formato binario** te da el rendimiento para producción (mapear embeddings contiguos a memoria). Que la migración sea automática es un gran acierto.
-
-### 3. El ecosistema periférico (MCP + Chunker)
-
-El servidor MCP nativo sobre stdio eleva tu proyecto de ser "una librería de vectores más" a ser una herramienta de productividad inmediata para el ecosistema de agentes (Claude Desktop, Cursor). Al incluir el *Smart Chunker* y el *File Watcher*, estás resolviendo el pipeline completo de RAG en un solo binario sin dependencias externas.
+> Deep technical analysis of strengths, indexes, and improvement opportunities.
 
 ---
 
-## 🔍 Diagnóstico de tus Índices (Analizando tus Benchmarks)
+## 💎 Architecture and Design Strengths
 
-Mirando tu tabla de rendimiento (5K docs, 128-dim), hay datos muy reveladores que explican por qué sientes que HNSW es subóptimo en tu sistema:
+### 1. SQ Orthogonality (Scalar Quantization)
 
-- **HNSW (77 us) vs Annoy (3,216 us)**: Annoy está rindiendo peor que la fuerza bruta (1,460 us). Esto es un síntoma claro de que para datasets pequeños o medianos (<10K elementos), el costo de saltar entre árboles en Annoy o la sobrecarga de la abstracción supera al cómputo lineal.
-- **HNSW + SQ (Recall 0-60%)**: Aquí está tu verdadero dolor de cabeza actual. Un recall del 0% al 60% es inutilizable para producción. Esto ocurre porque al pasar los vectores a i8 de forma lineal, la pérdida de información destruye la estructura geométrica del grafo de HNSW (los enlaces del grafo se calculan mal o las búsquedas se desvían prematuramente).
+Making SQ (i8) an orthogonal module that can be applied on top of *any* backend is a brilliant design decision. Reducing RAM ~4× while maintaining the base backend structure (like HNSW) is exactly how commercial engines operate. The fact that it already supports *rescoring* in f32 demonstrates architectural maturity.
 
----
+### 2. JSONL / Binary Duality (The perfect balance)
 
-## 🛠️ ¿Cómo encaja ScaNN o las otras opciones en dogma-vdb?
+- **JSONL** gives you the best developer experience (*DX*): readability, debuggability with grep/awk, Git compatibility, and O(1) append-only persistence.
+- **The binary format** gives you production performance (memory-mappable contiguous embeddings). The fact that migration is automatic is a great achievement.
 
-### Opción A: Intentar implementar ScaNN puro (No recomendado)
+### 3. The peripheral ecosystem (MCP + Chunker)
 
-ScaNN requiere implementar *Anisotropic Vector Quantization*. La matemática para resolver la función de pérdida que penaliza el error paralelo requiere una cantidad considerable de álgebra lineal compleja. Rompería tu regla de "módulos de <300 líneas" y "cero abstracciones complejas". Además, ScaNN brilla a partir de cientos de miles o millones de vectores; para el target actual de tu HNSW (<100K docs), sería añadir sobreingeniería.
-
-### Opción B: Implementar IVF-PQ (La evolución natural de tu SQ)
-
-Ya tienes el módulo SQ. Si creas un nuevo backend llamado `IVF_PQ`, puedes reutilizar conceptos:
-
-1. Implementas un K-Means muy simple en `index/ivf.rs` para partir el espacio en listas invertidas.
-2. En lugar de empaquetar todo el grafo de HNSW, los vectores se guardan comprimidos en sus respectivos buckets.
-3. **Resultado**: Solucionas el problema del Recall bajo de tu HNSW+SQ actual, mantienes el ahorro de 4× de RAM (o más) y el código seguirá siendo limpio, lineal y vectorizable con tu crate `wide`.
-
-### Opción C: Refactorizar HNSW usando un enfoque Compacto (Estilo USearch)
-
-Dado que tu HNSW ya es ridículamente rápido (77 microsegundos por query), tu problema no es la velocidad, es la memoria y el recall con SQ. Si rediseñas la estructura de datos de tu grafo para que los nodos y sus vecinos estén contiguos en memoria (un solo `Vec<u8>` o `Vec<u32>` plano en lugar de nodos con punteros/IDs dispersos), reducirás drásticamente el consumo de RAM de HNSW sin perder el 100% de recall.
+The native MCP server over stdio elevates your project from being "just another vector library" to an immediate productivity tool for the agent ecosystem (Claude Desktop, Cursor). By including the *Smart Chunker* and the *File Watcher*, you are solving the complete RAG pipeline in a single binary with no external dependencies.
 
 ---
 
-## 🚀 Puntos Críticos a Mejorar (Code Review Arquitectónico)
+## 🔍 Index Diagnosis (Analyzing Your Benchmarks)
 
-### 1. Arreglar el Recall de HNSW+SQ
+Looking at your performance table (5K docs, 128-dim), there are very revealing data points that explain why you feel HNSW is suboptimal in your system:
 
-Para usar SQ con HNSW con éxito, el grafo debe construirse utilizando los vectores originales (f32), y la cuantización i8 solo debe usarse en la fase de comparación a nivel SIMD, o bien aplicar un *Heuristic Routing* que soporte la pérdida de precisión. Si construyes el grafo directamente con las distancias cuantizadas, el grafo se rompe.
-
-### 2. Aprovechar Memory Mapping (mmap)
-
-Tu formato binario nativo tarda 9ms en cargar 5K documentos. Si cambias la lectura tradicional por mapeo de memoria (usando el crate `memmap2`, por ejemplo), el tiempo de carga será de ~0 milisegundos, ya que dejas que el sistema operativo cargue los vectores contiguos en la caché de la CPU a demanda desde el almacenamiento. Esto va de la mano con tu filosofía *zero-server*.
-
-### 3. Sincronismo vs Escala
-
-Tu diseño de "sin async por defecto" es excelente para la simplicidad. Sin embargo, para operaciones de `batch_insert` o la construcción de índices (Annoy o HNSW), asegúrate de usar `rayon` de manera interna (oculto tras el código síncrono) para paralelizar el uso de todos los cores de la CPU sin comprometer la API limpia que tienes.
+- **HNSW (77 us) vs Annoy (3,216 us)**: Annoy is performing worse than brute force (1,460 us). This is a clear symptom that for small or medium datasets (<10K elements), the cost of jumping between trees in Annoy or the abstraction overhead outweighs linear computation.
+- **HNSW + SQ (Recall 0-60%)**: This is your current real headache. A recall of 0% to 60% is unusable for production. This occurs because when passing vectors to i8 linearly, the information loss destroys the geometric structure of the HNSW graph (graph links are computed incorrectly or searches diverge prematurely).
 
 ---
 
-## 🎯 Conclusión
+## 🛠️ How do ScaNN or other options fit into dogma-vdb?
 
-dogma-vdb tiene un potencial enorme como la base de datos vectorial por excelencia para desarrollo local, CLI, herramientas internas y sistemas embebidos (Edge computing).
+### Option A: Attempting to implement pure ScaNN (Not recommended)
 
-No necesitas la complejidad de ScaNN. Tu camino ideal para mantener la elegancia de tu proyecto es:
+ScaNN requires implementing *Anisotropic Vector Quantization*. The mathematics to solve the loss function that penalizes parallel error requires a considerable amount of complex linear algebra. It would break your rule of "<300 line modules" and "zero complex abstractions". Furthermore, ScaNN shines starting at hundreds of thousands or millions of vectors; for your current HNSW target (<100K docs), it would be overengineering.
 
-1. **Arreglar la implementación de SQ sobre HNSW** para recuperar el recall, o
-2. **Añadir un backend IVF-PQ** que sustituya a Annoy (el cual claramente no te está aportando valor en rendimiento según tus benchmarks).
+### Option B: Implementing IVF-PQ (The natural evolution of your SQ)
+
+You already have the SQ module. If you create a new backend called `IVF_PQ`, you can reuse concepts:
+
+1. Implement a very simple K-Means in `index/ivf.rs` to partition the space into inverted lists.
+2. Instead of packaging the entire HNSW graph, vectors are stored compressed in their respective buckets.
+3. **Result**: You solve the low Recall problem of your current HNSW+SQ, maintain the 4× (or more) RAM savings, and the code will remain clean, linear, and vectorizable with your `wide` crate.
+
+### Option C: Refactoring HNSW using a Compact approach (USearch style)
+
+Given that your HNSW is already ridiculously fast (77 microseconds per query), your problem is not speed, it's memory and recall with SQ. If you redesign your graph's data structure so that nodes and their neighbors are contiguous in memory (a single `Vec<u8>` or flat `Vec<u32>` instead of nodes with scattered pointers/IDs), you will drastically reduce HNSW's RAM consumption without losing 100% recall.
+
+---
+
+## 🚀 Critical Points to Improve (Architectural Code Review)
+
+### 1. Fix HNSW+SQ Recall
+
+To use SQ with HNSW successfully, the graph must be built using the original vectors (f32), and i8 quantization should only be used in the SIMD comparison phase, or alternatively apply *Heuristic Routing* that tolerates precision loss. If you build the graph directly with quantized distances, the graph breaks.
+
+### 2. Leverage Memory Mapping (mmap)
+
+Your native binary format takes 9ms to load 5K documents. If you switch from traditional reading to memory mapping (using the `memmap2` crate, for example), the load time will be ~0 milliseconds, as you let the operating system load the contiguous vectors into the CPU cache on demand from storage. This aligns with your *zero-server* philosophy.
+
+### 3. Synchronicity vs Scale
+
+Your "no async by default" design is excellent for simplicity. However, for `batch_insert` operations or index building (Annoy or HNSW), make sure to use `rayon` internally (hidden behind synchronous code) to parallelize usage of all CPU cores without compromising the clean API you have.
+
+---
+
+## 🎯 Conclusion
+
+dogma-vdb has enormous potential as the go-to vector database for local development, CLI, internal tools, and embedded systems (Edge computing).
+
+You do not need the complexity of ScaNN. Your ideal path to maintain the elegance of your project is:
+
+1. **Fix the SQ implementation over HNSW** to recover recall, or
+2. **Add an IVF-PQ backend** to replace Annoy (which clearly is not providing performance value according to your benchmarks).
