@@ -16,6 +16,7 @@ use crate::index::{
 };
 use crate::storage::traits::VectorStorage;
 use crate::storage::BinStorage;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -287,19 +288,25 @@ impl Collection {
             Vec::new()
         };
 
-        // Fuse vector + BM25 results into lightweight (doc_index, score) pairs
+        // Build a doc_id lookup: document index → position in documents slice.
+        // ScoredDocument carries the document directly, so we resolve IDs here
+        // for RRF fusion with BM25 results.
+        let mut doc_index: HashMap<String, usize> = HashMap::new();
+        for (i, doc) in self.index.documents().iter().enumerate() {
+            doc_index.insert(doc.id.clone(), i);
+        }
+
+        // Fuse vector + BM25 results using document IDs as the common key
         let fused: Vec<(usize, f32)> = if pipeline.use_bm25() && !bm25_results.is_empty() {
             let vec_ids: Vec<(usize, f32)> = vec_results
                 .iter()
-                .enumerate()
-                .map(|(i, r)| (i, r.score))
+                .filter_map(|r| doc_index.get(&r.document.id).map(|&idx| (idx, r.score)))
                 .collect();
             crate::index::rrf::fuse(&vec_ids, &bm25_results, top_k * 2)
         } else {
             let mut v: Vec<(usize, f32)> = vec_results
                 .iter()
-                .enumerate()
-                .map(|(i, r)| (i, r.score))
+                .filter_map(|r| doc_index.get(&r.document.id).map(|&idx| (idx, r.score)))
                 .collect();
             v.truncate(top_k * 2);
             v
@@ -312,7 +319,6 @@ impl Collection {
                     .map(|&(id, _)| self.index.documents()[id].clone())
                     .collect();
                 if rank.rerank(query_text, &mut docs).is_ok() {
-                    // Reuse the reranker's output Vec — no second clone
                     return docs
                         .into_iter()
                         .map(|d| ScoredDocument {

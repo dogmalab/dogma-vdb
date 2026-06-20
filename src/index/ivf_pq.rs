@@ -184,6 +184,13 @@ pub struct IvfPqIndex {
     /// Number of documents added via incremental append since last full rebuild.
     /// Reset to 0 after every `build_index()` call.
     stale_docs: usize,
+
+    /// Tombstone flags — `true` means the document at that index is deleted.
+    /// Search skips tombstoned docs; rebuild compacts them away.
+    tombstones: Vec<bool>,
+
+    /// Number of tombstoned docs.  Triggers rebuild when ratio exceeds threshold.
+    tombstone_count: usize,
 }
 
 impl std::fmt::Debug for IvfPqIndex {
@@ -197,6 +204,7 @@ impl std::fmt::Debug for IvfPqIndex {
             .field("codes", &self.codes)
             .field("storage", &self.storage.as_ref().map(|_| ".."))
             .field("stale_docs", &self.stale_docs)
+            .field("tombstone_count", &self.tombstone_count)
             .finish()
     }
 }
@@ -217,16 +225,26 @@ impl IvfPqIndex {
             codes: Vec::new(),
             storage: None,
             stale_docs: 0,
+            tombstones: Vec::new(),
+            tombstone_count: 0,
         }
     }
 
-    /// Number of stored documents.
+    /// Number of live (non-tombstoned) documents.
     pub fn len(&self) -> usize {
-        self.documents.len()
+        self.documents.len() - self.tombstone_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.documents.is_empty()
+        self.len() == 0
+    }
+
+    /// Ratio of tombstoned docs vs total (0.0–1.0).
+    pub fn tombstone_ratio(&self) -> f64 {
+        if self.documents.is_empty() {
+            return 0.0;
+        }
+        self.tombstone_count as f64 / self.documents.len() as f64
     }
 
     /// Access the stored documents.
@@ -290,6 +308,7 @@ impl IvfPqIndex {
         clusters: Vec<Vec<usize>>,
         stale_docs: usize,
     ) -> Self {
+        let n = documents.len();
         Self {
             documents,
             config,
@@ -299,6 +318,8 @@ impl IvfPqIndex {
             codes,
             storage: None,
             stale_docs,
+            tombstones: vec![false; n],
+            tombstone_count: 0,
         }
     }
 
@@ -458,6 +479,28 @@ impl IvfPqIndex {
         }
 
         self.stale_docs = 0;
+        self.tombstones = vec![false; self.documents.len()];
+        self.tombstone_count = 0;
+    }
+
+    /// Compact away tombstoned documents and rebuild the index from scratch.
+    ///
+    /// This is triggered when `tombstone_ratio()` exceeds the configured
+    /// `rebuild_threshold`.  All live documents are re-indexed with fresh
+    /// centroids and codebooks.
+    fn rebuild_compact(&mut self) {
+        let live: Vec<Document> = self
+            .documents
+            .iter()
+            .zip(self.tombstones.iter())
+            .filter(|(_, &tomb)| !tomb)
+            .map(|(d, _)| d.clone())
+            .collect();
+
+        let config = self.config.clone();
+        *self = Self::new(config);
+        self.documents = live;
+        self.build_index();
     }
 
     /// Append documents incrementally — no centroids or codebooks are updated.
@@ -522,6 +565,7 @@ impl IvfPqIndex {
             // 3. Append
             self.documents.push(doc.clone());
             self.codes.push(code);
+            self.tombstones.push(false);
             self.clusters[best_ci].push(self.documents.len() - 1);
         }
 
@@ -591,14 +635,15 @@ impl IvfPqIndex {
             })
             .collect();
 
-        // 3. Scan docs in selected clusters — lightweight CandidateResult,
-        //    NO Document cloning inside the parallel pipeline.
+        // 3. Scan docs in selected clusters — skip tombstoned docs,
+        //    lightweight CandidateResult, NO Document cloning.
         let mut results: Vec<CandidateResult> = active_clusters
             .par_iter()
             .flat_map(|&ci| {
                 let cluster = &self.clusters[ci];
                 let mut local: Vec<CandidateResult> = cluster
                     .iter()
+                    .filter(|&&doc_id| !self.tombstones[doc_id])
                     .map(|&doc_id| {
                         let code = &self.codes[doc_id];
                         let score: f32 = (0..m).map(|s| luts[s][code[s] as usize]).sum();
@@ -645,21 +690,26 @@ impl Index for IvfPqIndex {
     }
 
     fn delete(&mut self, ids: &[&str]) -> usize {
-        let before = self.documents.len();
         let id_set: std::collections::HashSet<&str> = ids.iter().copied().collect();
-        let remaining: Vec<Document> = self
-            .documents
-            .iter()
-            .filter(|d| !id_set.contains(d.id.as_str()))
-            .cloned()
-            .collect();
-        let deleted = before - remaining.len();
-        if deleted > 0 {
-            let config = self.config.clone();
-            *self = Self::new(config);
-            self.documents = remaining;
-            self.build_index();
+        let mut deleted = 0usize;
+        for (i, doc) in self.documents.iter().enumerate() {
+            if !self.tombstones[i] && id_set.contains(doc.id.as_str()) {
+                self.tombstones[i] = true;
+                self.tombstone_count += 1;
+                deleted += 1;
+            }
         }
+
+        // Trigger rebuild if tombstone ratio exceeds threshold
+        if deleted > 0 && self.tombstone_ratio() >= self.config.rebuild_threshold {
+            log::warn!(
+                "IVF-PQ tombstone ratio {:.1}% >= {:.0}% — triggering rebuild",
+                self.tombstone_ratio() * 100.0,
+                self.config.rebuild_threshold * 100.0,
+            );
+            self.rebuild_compact();
+        }
+
         deleted
     }
 
@@ -682,7 +732,21 @@ impl Index for IvfPqIndex {
     }
 
     fn len(&self) -> usize {
-        self.documents.len()
+        self.documents.len() - self.tombstone_count
+    }
+
+    fn save(&self, base_path: &std::path::Path) -> crate::error::Result<()> {
+        self.save_persistence(base_path)
+    }
+
+    fn load(base_path: &std::path::Path) -> crate::error::Result<Option<Self>>
+    where
+        Self: Sized,
+    {
+        // Config is embedded in the persistence file; use default for
+        // the signature — load_persistence reads it from the .meta file.
+        let default_config = IvfPqConfig::default();
+        crate::index::ivf_pq_persistence::load(base_path, &default_config)
     }
 }
 
@@ -778,6 +842,72 @@ mod tests {
         let deleted = Index::delete(&mut idx, &["a"]);
         assert_eq!(deleted, 1);
         assert_eq!(idx.len(), 1);
+        // Tombstoned doc should not appear in search results
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].document.id, "b");
+    }
+
+    #[test]
+    fn test_tombstone_does_not_rebuild() {
+        let mut idx = IvfPqIndex::new(IvfPqConfig {
+            n_list: 4,
+            m_subspaces: 8,
+            n_probe: 2,
+            metric: Metric::Cosine,
+            rebuild_threshold: 0.50, // only rebuild at 50%
+            ..Default::default()
+        });
+        let docs: Vec<Document> = (0..20)
+            .map(|i| {
+                make_doc(
+                    &format!("d{}", i),
+                    vec![i as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )
+            })
+            .collect();
+        idx.insert(&docs);
+        assert_eq!(idx.len(), 20);
+
+        // Delete 1 doc (5%) — should NOT trigger rebuild (< 50%)
+        let deleted = Index::delete(&mut idx, &["d0"]);
+        assert_eq!(deleted, 1);
+        assert_eq!(idx.len(), 19);
+        assert!(idx.tombstone_ratio() < 0.50);
+
+        // Search should still work
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5);
+        assert!(!results.is_empty());
+        // d0 should not appear
+        assert!(results.iter().all(|r| r.document.id != "d0"));
+    }
+
+    #[test]
+    fn test_tombstone_triggers_rebuild() {
+        let mut idx = IvfPqIndex::new(IvfPqConfig {
+            n_list: 4,
+            m_subspaces: 8,
+            n_probe: 2,
+            metric: Metric::Cosine,
+            rebuild_threshold: 0.20, // rebuild at 20%
+            ..Default::default()
+        });
+        let docs: Vec<Document> = (0..10)
+            .map(|i| {
+                make_doc(
+                    &format!("d{}", i),
+                    vec![i as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )
+            })
+            .collect();
+        idx.insert(&docs);
+
+        // Delete 3 docs (30%) — should trigger rebuild at 20% threshold
+        let deleted = Index::delete(&mut idx, &["d0", "d1", "d2"]);
+        assert_eq!(deleted, 3);
+        // After rebuild, tombstones should be cleared
+        assert_eq!(idx.tombstone_count, 0);
+        assert_eq!(idx.len(), 7);
     }
 
     #[test]

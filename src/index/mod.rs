@@ -23,7 +23,9 @@ pub use ivf_pq::{IvfPqConfig, IvfPqIndex};
 pub use sq::*;
 
 use crate::doc::Document;
+use crate::error::{Error, Result};
 use crate::storage::traits::VectorStorage;
+use std::path::Path;
 use std::sync::Arc;
 
 /// A scored search result.
@@ -85,4 +87,25 @@ pub trait Index: Send + Sync {
     /// computation instead of the per-document embeddings stored in
     /// [`Document`].  Default is a no-op.
     fn set_storage(&mut self, _storage: Arc<dyn VectorStorage>) {}
+
+    /// Persist the index state to disk at `base_path`.
+    ///
+    /// The format is backend-specific.  Returns
+    /// [`Error::FeatureNotAvailable`] if the backend does not support
+    /// persistence.
+    fn save(&self, _base_path: &Path) -> Result<()> {
+        Err(Error::FeatureNotAvailable("index persistence"))
+    }
+
+    /// Load index state from a previously saved persistence file.
+    ///
+    /// Returns `Ok(None)` if no persistence file exists at `base_path`.
+    /// Returns [`Error::FeatureNotAvailable`] if the backend does not
+    /// support persistence.
+    fn load(_base_path: &Path) -> Result<Option<Self>>
+    where
+        Self: Sized,
+    {
+        Err(Error::FeatureNotAvailable("index persistence"))
+    }
 }
