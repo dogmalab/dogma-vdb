@@ -4,20 +4,29 @@
 //!
 //! ```bash
 //! # Show collection info
-//! dogma-vdb-cli info my_data.vdb
+//! dogma-vdb info my_data.vdb
 //!
 //! # List documents
-//! dogma-vdb-cli list my_data.vdb
+//! dogma-vdb list my_data.vdb
 //!
 //! # Search (embedding as comma-separated floats)
-//! dogma-vdb-cli query my_data.vdb "0.1,0.2,0.3" --k 10
+//! dogma-vdb query my_data.vdb "0.1,0.2,0.3" --k 10
 //!
 //! # Ingest a document
-//! dogma-vdb-cli ingest my_data.vdb --id doc-1 --text "Hello, world!"
+//! dogma-vdb ingest my_data.vdb --id doc-1 --text "Hello, world!"
 //!
 //! # Delete documents
-//! dogma-vdb-cli delete my_data.vdb doc-1 doc-2
+//! dogma-vdb delete my_data.vdb doc-1 doc-2
+//!
+//! # RAG: ingest a source directory (requires `rag` feature)
+//! dogma-vdb rag ingest ./src --output docs.vdb
+//!
+//! # RAG: semantic query
+//! dogma-vdb rag query docs.vdb "how does HNSW work?"
 //! ```
+
+#[cfg(feature = "rag")]
+mod rag;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -121,6 +130,10 @@ enum Commands {
         #[arg(long, default_value = "cosine")]
         metric: String,
     },
+    /// RAG pipeline: chunk, embed, index, and search source files
+    #[cfg(feature = "rag")]
+    #[command(subcommand)]
+    Rag(rag::Commands),
 }
 
 fn main() -> Result<()> {
@@ -164,6 +177,54 @@ fn main() -> Result<()> {
             index_type,
             metric,
         } => cmd_export(&path, output, &index_type, &metric),
+        #[cfg(feature = "rag")]
+        Commands::Rag(subcmd) => match subcmd {
+            rag::Commands::Ingest {
+                source,
+                output,
+                extensions,
+                index,
+                metric,
+                hash,
+                dim,
+            } => rag::ingest::run_ingest(&source, &output, &extensions, &index, &metric, hash, dim),
+            rag::Commands::Query {
+                collection,
+                query,
+                k,
+                index,
+                metric,
+                hash,
+                dim,
+                hybrid,
+            } => rag::query::run_query(&collection, &query, k, &index, &metric, hash, dim, hybrid),
+            rag::Commands::Watch {
+                source,
+                output,
+                extensions,
+                index,
+                metric,
+                hash,
+                dim,
+                debounce_ms,
+                no_initial,
+            } => rag::watch::run_watch(
+                &source,
+                &output,
+                &extensions,
+                &index,
+                &metric,
+                hash,
+                dim,
+                debounce_ms,
+                !no_initial,
+            ),
+            rag::Commands::Info {
+                collection,
+                index,
+                metric,
+            } => rag::query::run_info(&collection, &index, &metric),
+        },
     }
 }
 
@@ -260,13 +321,11 @@ fn cmd_ingest(
 ) -> Result<()> {
     let mut col = open_collection(path, index_type, metric)?;
 
-    // Resolve document ID
     let doc_id = id.unwrap_or_else(|| {
         let n = col.len() + 1;
         format!("doc-{n}")
     });
 
-    // Resolve document text
     let doc_text: String = if let Some(t) = text {
         t
     } else if let Some(f) = file {
@@ -275,7 +334,6 @@ fn cmd_ingest(
         anyhow::bail!("provide --text or --file for document content");
     };
 
-    // Optional embedding
     let mut builder = Document::builder(&doc_id, doc_text);
     if let Some(emb_str) = embedding_str {
         let emb = parse_embedding(&emb_str)?;
