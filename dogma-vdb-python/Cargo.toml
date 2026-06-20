@@ -1,0 +1,18 @@
+[package]
+name = "dogma-vdb-python"
+version = "0.1.0"
+description = "Python bindings for dogma-vdb — portable vector database with hybrid search."
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "dogma_vdb"
+crate-type = ["cdylib"]
+
+[dependencies]
+dogma-vdb = { path = ".." }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[build-dependencies]
+pyo3-build-config = "0.23"

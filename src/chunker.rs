@@ -3,9 +3,22 @@
 use crate::doc::Document;
 use std::collections::HashMap;
 
-/// Configuration for the [`Chunker`].
+/// Trait for text chunkers that split documents into smaller pieces.
+///
+/// Implement this trait to provide custom chunking logic for the RAG pipeline.
+/// The built-in [`SmartChunker`] selects the best strategy automatically
+/// based on file type (code, prose, or generic).
+pub trait Chunker: Send + Sync {
+    /// Chunk a file's content into individual documents.
+    ///
+    /// * `path` — file path (used for type detection in SmartChunker)
+    /// * `text` — raw file content
+    fn chunk(&self, path: &str, text: &str) -> Vec<Document>;
+}
+
+/// Configuration for the [`TextSplitter`].
 #[derive(Debug, Clone)]
-pub struct ChunkerConfig {
+pub struct TextSplitterConfig {
     /// Maximum chunk length in characters.
     pub chunk_size: usize,
     /// Overlap between consecutive chunks (characters).
@@ -14,7 +27,7 @@ pub struct ChunkerConfig {
     pub separator: String,
 }
 
-impl Default for ChunkerConfig {
+impl Default for TextSplitterConfig {
     fn default() -> Self {
         Self {
             chunk_size: 512,
@@ -29,18 +42,18 @@ impl Default for ChunkerConfig {
 /// # Example
 ///
 /// ```
-/// use dogma_vdb::chunker::{Chunker, ChunkerConfig};
+/// use dogma_vdb::chunker::{TextSplitter, TextSplitterConfig};
 ///
-/// let chunker = Chunker::default();
+/// let chunker = TextSplitter::default();
 /// let chunks = chunker.chunk("A very long text...");
 /// ```
 #[derive(Debug, Clone)]
-pub struct Chunker {
-    config: ChunkerConfig,
+pub struct TextSplitter {
+    config: TextSplitterConfig,
 }
 
-impl Chunker {
-    pub fn new(config: ChunkerConfig) -> Self {
+impl TextSplitter {
+    pub fn new(config: TextSplitterConfig) -> Self {
         Self { config }
     }
 
@@ -114,9 +127,9 @@ impl Chunker {
     }
 }
 
-impl Default for Chunker {
+impl Default for TextSplitter {
     fn default() -> Self {
-        Self::new(ChunkerConfig::default())
+        Self::new(TextSplitterConfig::default())
     }
 }
 
@@ -126,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_chunk_short_text() {
-        let chunker = Chunker::default();
+        let chunker = TextSplitter::default();
         let chunks = chunker.chunk("corto");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "corto");
@@ -135,7 +148,7 @@ mod tests {
     #[test]
     fn test_chunk_long_text() {
         let text = "A".repeat(2000);
-        let chunker = Chunker::new(ChunkerConfig {
+        let chunker = TextSplitter::new(TextSplitterConfig {
             chunk_size: 500,
             overlap: 50,
             separator: "\n".into(),
@@ -151,7 +164,7 @@ mod tests {
     #[test]
     fn test_chunk_exactly_at_boundary() {
         let text = "hello\n\nworld\n\nfoo";
-        let chunker = Chunker::new(ChunkerConfig {
+        let chunker = TextSplitter::new(TextSplitterConfig {
             chunk_size: 12, // "hello\n\nworld" is 12 chars
             overlap: 0,
             separator: "\n\n".into(),
@@ -169,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_chunk_empty_text() {
-        let chunker = Chunker::default();
+        let chunker = TextSplitter::default();
         let chunks = chunker.chunk("");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "");
@@ -178,7 +191,7 @@ mod tests {
     #[test]
     fn test_chunk_with_overlap() {
         let text = "abcdefghijklmnopqrstuvwxyz";
-        let chunker = Chunker::new(ChunkerConfig {
+        let chunker = TextSplitter::new(TextSplitterConfig {
             chunk_size: 10,
             overlap: 4,
             separator: "\n".into(),
@@ -202,7 +215,7 @@ mod tests {
     #[test]
     fn test_chunk_separator_priority() {
         let text = "AAA\n\nBBB\n\nCCC";
-        let chunker = Chunker::new(ChunkerConfig {
+        let chunker = TextSplitter::new(TextSplitterConfig {
             chunk_size: 10,
             overlap: 0,
             separator: "\n\n".into(),
@@ -219,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_chunk_to_docs() {
-        let chunker = Chunker::new(ChunkerConfig {
+        let chunker = TextSplitter::new(TextSplitterConfig {
             chunk_size: 10,
             overlap: 0,
             separator: "\n".into(),
@@ -238,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_chunk_to_docs_with_empty_text() {
-        let chunker = Chunker::default();
+        let chunker = TextSplitter::default();
         let docs = chunker.chunk_to_docs("", "empty", HashMap::new());
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].id, "empty-0");

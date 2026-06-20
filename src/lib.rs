@@ -46,7 +46,7 @@ pub use config::{Config, CONFIG};
 
 /// Convenience re‑exports of the most common types.
 pub mod prelude {
-    pub use crate::chunker::{Chunker, ChunkerConfig};
+    pub use crate::chunker::{Chunker, TextSplitter, TextSplitterConfig};
     pub use crate::collection::Collection;
     pub use crate::distance::Metric;
     pub use crate::doc::{Document, DocumentBuilder};

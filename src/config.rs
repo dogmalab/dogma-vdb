@@ -19,7 +19,7 @@ pub struct Config {
     #[serde(default)]
     pub general: General,
     #[serde(default)]
-    pub chunker: ChunkerConfig,
+    pub chunker: TextSplitterConfig,
     #[serde(default)]
     pub collection: CollectionConfig,
     #[serde(default)]
@@ -48,15 +48,15 @@ impl General {
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
-pub struct ChunkerConfig {
-    #[serde(default = "ChunkerConfig::default_chunk_size")]
+pub struct TextSplitterConfig {
+    #[serde(default = "TextSplitterConfig::default_chunk_size")]
     pub chunk_size: usize,
-    #[serde(default = "ChunkerConfig::default_overlap")]
+    #[serde(default = "TextSplitterConfig::default_overlap")]
     pub overlap: usize,
-    #[serde(default = "ChunkerConfig::default_separator")]
+    #[serde(default = "TextSplitterConfig::default_separator")]
     pub separator: String,
 }
-impl ChunkerConfig {
+impl TextSplitterConfig {
     const fn default_chunk_size() -> usize {
         4096
     }
@@ -290,7 +290,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: General { debug: false },
-            chunker: ChunkerConfig {
+            chunker: TextSplitterConfig {
                 chunk_size: 4096,
                 overlap: 128,
                 separator: "\n\n".into(),

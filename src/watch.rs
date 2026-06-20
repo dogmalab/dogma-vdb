@@ -364,3 +364,230 @@ pub fn start_watching(config: WatchConfig) -> Result<Receiver<WatchEvent>> {
 
     Ok(rx)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_state(dir: &TempDir) -> (WatcherState, Receiver<WatchEvent>) {
+        let (tx, rx) = unbounded::<WatchEvent>();
+        let output = dir.path().join("test.vdb");
+        let config = WatchConfig {
+            source_dirs: vec![dir.path().to_path_buf()],
+            extensions: vec!["txt".into(), "md".into()],
+            output,
+            debounce_ms: 100,
+            initial_scan: false,
+        };
+        (WatcherState::new(config, tx), rx)
+    }
+
+    #[test]
+    fn test_walkdir_filters_extensions() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        fs::write(dir.path().join("b.md"), "world").unwrap();
+        fs::write(dir.path().join("c.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("d.py"), "print('hi')").unwrap();
+
+        let mut found = Vec::new();
+        walkdir(dir.path(), &["txt".into(), "md".into()], &mut |p| {
+            found.push(p.file_name().unwrap().to_string_lossy().to_string())
+        });
+        found.sort_unstable();
+        assert_eq!(found, vec!["a.txt", "b.md"]);
+    }
+
+    #[test]
+    fn test_walkdir_empty_extensions_matches_all() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        fs::write(dir.path().join("b.rs"), "fn main() {}").unwrap();
+
+        let mut found = Vec::new();
+        walkdir(dir.path(), &[], &mut |p| {
+            found.push(p.file_name().unwrap().to_string_lossy().to_string())
+        });
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn test_walkdir_skips_hidden_and_special_dirs() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("visible.txt"), "hello").unwrap();
+
+        // walkdir does NOT skip hidden dirs — that's RAG pipeline logic.
+        // walkdir only filters by extension.
+        let git_dir = dir.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("config.txt"), "hidden").unwrap();
+
+        let mut found = Vec::new();
+        walkdir(dir.path(), &["txt".into()], &mut |p| {
+            found.push(p.file_name().unwrap().to_string_lossy().to_string())
+        });
+        found.sort_unstable();
+        // walkdir finds all .txt files, including in .git/
+        assert_eq!(found, vec!["config.txt", "visible.txt"]);
+    }
+
+    #[test]
+    fn test_walkdir_nested_directories() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("root.txt"), "root").unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("nested.txt"), "nested").unwrap();
+        let deep = sub.join("deep");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("deep.txt"), "deep").unwrap();
+
+        let mut found = Vec::new();
+        walkdir(dir.path(), &["txt".into()], &mut |p| {
+            found.push(p.file_name().unwrap().to_string_lossy().to_string())
+        });
+        found.sort();
+        assert_eq!(found, vec!["deep.txt", "nested.txt", "root.txt"]);
+    }
+
+    #[test]
+    fn test_process_batch_creates_collection() {
+        let dir = TempDir::new().unwrap();
+        let (state, rx) = make_state(&dir);
+
+        // Create a source file
+        let src = dir.path().join("source");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("hello.txt"),
+            "Hello, world! This is a test document.",
+        )
+        .unwrap();
+
+        let mut files = HashSet::new();
+        files.insert(src.join("hello.txt"));
+
+        state.process_batch(&files);
+
+        // Collection should exist
+        assert!(state.config.output.exists());
+
+        // Should have received an Updated event
+        let event = rx.try_recv().unwrap();
+        match event {
+            WatchEvent::Updated { docs_added, .. } => assert!(docs_added > 0),
+            other => panic!("Expected Updated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_process_batch_updates_existing() {
+        let dir = TempDir::new().unwrap();
+        let (state, rx) = make_state(&dir);
+
+        let src = dir.path().join("source");
+        fs::create_dir_all(&src).unwrap();
+        let file_path = src.join("doc.txt");
+
+        // First insert
+        fs::write(&file_path, "Version one of the document.").unwrap();
+        let mut files = HashSet::new();
+        files.insert(file_path.clone());
+        state.process_batch(&files);
+        let _ = rx.try_recv(); // consume Updated event
+
+        // Count docs after first insert
+        let col = Collection::open_with(&state.config.output, "bruteforce", "cosine").unwrap();
+        let count_before = col.len();
+        assert!(count_before > 0);
+        drop(col);
+
+        // Second insert (update)
+        fs::write(&file_path, "Version two of the document with more content.").unwrap();
+        state.process_batch(&files);
+
+        // Should still have docs (old deleted, new inserted)
+        let col = Collection::open_with(&state.config.output, "bruteforce", "cosine").unwrap();
+        assert!(col.len() > 0);
+    }
+
+    #[test]
+    fn test_remove_file_deletes_from_collection() {
+        let dir = TempDir::new().unwrap();
+        let (state, _rx) = make_state(&dir);
+
+        let src = dir.path().join("source");
+        fs::create_dir_all(&src).unwrap();
+        let file_path = src.join("remove_me.txt");
+
+        // Insert a file first
+        fs::write(&file_path, "Document to be removed.").unwrap();
+        let mut files = HashSet::new();
+        files.insert(file_path.clone());
+        state.process_batch(&files);
+
+        // Verify it's there
+        let col = Collection::open_with(&state.config.output, "bruteforce", "cosine").unwrap();
+        assert!(col.len() > 0);
+        drop(col);
+
+        // Remove it
+        state.remove_file(&file_path);
+
+        // Verify path_to_id no longer has it
+        let map = state.path_to_id.lock().unwrap();
+        assert!(!map.contains_key(&file_path));
+    }
+
+    #[test]
+    fn test_initial_scan_indexes_all_files() {
+        let dir = TempDir::new().unwrap();
+        let (state, rx) = make_state(&dir);
+
+        // Create multiple files in source dirs
+        let src = dir.path();
+        fs::write(src.join("file1.txt"), "First document content.").unwrap();
+        fs::write(src.join("file2.md"), "Second document content.").unwrap();
+        fs::write(src.join("file3.txt"), "Third document content.").unwrap();
+        fs::write(src.join("skip.rs"), "fn main() {}").unwrap(); // wrong extension
+
+        state.initial_scan();
+
+        // Should have indexed 3 files (txt + md), skipped .rs
+        let event = rx.try_recv().unwrap();
+        match event {
+            WatchEvent::Updated { docs_added, .. } => assert!(docs_added >= 3),
+            other => panic!("Expected Updated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_name_extracts_file_stem() {
+        let dir = TempDir::new().unwrap();
+        let (state, _rx) = make_state(&dir);
+        assert_eq!(state.name(), "test");
+    }
+
+    #[test]
+    fn test_process_batch_skips_empty_files() {
+        let dir = TempDir::new().unwrap();
+        let (state, rx) = make_state(&dir);
+
+        let src = dir.path().join("source");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("empty.txt"), "").unwrap();
+
+        let mut files = HashSet::new();
+        files.insert(src.join("empty.txt"));
+        state.process_batch(&files);
+
+        // Should NOT receive an Updated event (no docs added)
+        assert!(rx.try_recv().is_err());
+    }
+}

@@ -381,6 +381,21 @@ fn subdivide_by_lines(chunk: &SmartChunk, max_size: usize) -> Vec<SmartChunk> {
 }
 
 // ---------------------------------------------------------------------------
+// Chunker trait implementation
+// ---------------------------------------------------------------------------
+
+impl crate::chunker::Chunker for SmartChunker {
+    fn chunk(&self, path: &str, text: &str) -> Vec<Document> {
+        let base_id = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("doc")
+            .to_string();
+        self.chunk_to_docs(path, text, &base_id, HashMap::new())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

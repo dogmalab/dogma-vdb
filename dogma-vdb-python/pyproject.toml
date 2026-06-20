@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dogma-vdb"
+description = "Portable vector database with hybrid search — Rust core, Python bindings."
+requires-python = ">=3.8"
+license = {text = "MIT OR Apache-2.0"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"

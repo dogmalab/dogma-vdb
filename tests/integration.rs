@@ -114,7 +114,7 @@ fn test_insert_batch() {
 
 #[test]
 fn test_chunker_integration() {
-    let chunker = Chunker::new(ChunkerConfig {
+    let chunker = TextSplitter::new(TextSplitterConfig {
         chunk_size: 100,
         overlap: 10,
         separator: "\n".into(),
