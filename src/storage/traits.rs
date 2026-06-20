@@ -119,7 +119,7 @@ impl VectorStorage for MemoryBackedStorage {
 /// The file is mapped into virtual memory; the operating system loads
 /// pages on demand.  No heap allocation — load time is effectively zero.
 ///
-/// # ⚠️ SIGBUS Warning
+/// # SIGBUS Warning
 ///
 /// If an external process **modifies or truncates** the underlying file
 /// while this mapping exists, the kernel delivers a `SIGBUS` signal and
@@ -131,15 +131,16 @@ impl VectorStorage for MemoryBackedStorage {
 ///   an `MmapBackedStorage` referencing it is alive.
 /// - dogma-vdb itself only **writes** to the file after closing the
 ///   collection (via `BinStorage::store`), so internal writes are safe.
-///
-/// Future work could add OS-level file locking (`fs2` crate) to prevent
-/// accidental concurrent modification.
 #[derive(Debug)]
 pub struct MmapBackedStorage {
     /// Keep the file handle alive for the lifetime of the mapping.
     _file: std::fs::File,
-    /// The memory-mapped region.
+    /// The memory-mapped region (full file or offset-mapped).
     mmap: memmap2::Mmap,
+    /// Byte offset into `mmap` where this storage's data starts.
+    offset: usize,
+    /// Byte length of this storage's data within `mmap`.
+    len: usize,
 }
 
 impl MmapBackedStorage {
@@ -150,7 +151,13 @@ impl MmapBackedStorage {
             source: e,
         })?;
         let mmap = crate::storage::mmap_file(&file)?;
-        Ok(Self { _file: file, mmap })
+        let len = mmap.len();
+        Ok(Self {
+            _file: file,
+            mmap,
+            offset: 0,
+            len,
+        })
     }
 
     /// Memory-map a **slice** of a file (offset + length).
@@ -167,13 +174,41 @@ impl MmapBackedStorage {
             source: e,
         })?;
         let mmap = crate::storage::mmap_file_offset(&file, offset, len)?;
-        Ok(Self { _file: file, mmap })
+        Ok(Self {
+            _file: file,
+            mmap,
+            offset: 0,
+            len,
+        })
+    }
+
+    /// Wrap an existing mmap with a sub-region view.
+    ///
+    /// The `mmap` must be at least `offset + len` bytes.  The returned
+    /// storage references only `mmap[offset..offset+len]` via
+    /// [`as_bytes`](VectorStorage::as_bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `offset + len > mmap.len()`.
+    pub fn from_mmap(file: std::fs::File, mmap: memmap2::Mmap, offset: usize, len: usize) -> Self {
+        assert!(
+            offset + len <= mmap.len(),
+            "MmapBackedStorage::from_mmap: offset ({offset}) + len ({len}) > mmap size ({})",
+            mmap.len()
+        );
+        Self {
+            _file: file,
+            mmap,
+            offset,
+            len,
+        }
     }
 }
 
 impl VectorStorage for MmapBackedStorage {
     fn as_bytes(&self) -> &[u8] {
-        &self.mmap
+        &self.mmap[self.offset..self.offset + self.len]
     }
 }
 

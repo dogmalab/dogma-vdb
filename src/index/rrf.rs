@@ -36,13 +36,21 @@ const RRF_K: usize = 60;
 /// # Performance
 ///
 /// Uses a flat `Vec` with linear scan instead of a `HashMap`.
-/// For the typical case (< 200 candidates) this is faster — no hash
+/// For the typical case (< 200 candidates total) this is faster — no hash
 /// computations, no intermediary allocations beyond the result buffer.
+/// Beyond ~500 candidates the O(n²) scan becomes a bottleneck; use a
+/// `HashMap`-based implementation for larger inputs.
 pub fn fuse<DocId: Copy + Eq>(
     list_a: &[(DocId, f32)],
     list_b: &[(DocId, f32)],
     top_k: usize,
 ) -> Vec<(DocId, f32)> {
+    debug_assert!(
+        list_a.len() + list_b.len() < 500,
+        "rrf::fuse called with {} candidates — consider HashMap-based implementation for > 500",
+        list_a.len() + list_b.len()
+    );
+
     if list_a.is_empty() && list_b.is_empty() {
         return Vec::new();
     }

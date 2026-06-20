@@ -33,6 +33,13 @@ pub enum Error {
 
     #[error("Out of memory: {0}")]
     OutOfMemory(String),
+
+    #[error("Incompatible file version: expected {expected}, got {got} at {path}")]
+    IncompatibleVersion {
+        path: PathBuf,
+        expected: u32,
+        got: u32,
+    },
 }
 
 /// Alias for `Result<T, dogma_vdb::Error>`.

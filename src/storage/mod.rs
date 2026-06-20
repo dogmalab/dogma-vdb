@@ -33,6 +33,7 @@
 
 use crate::doc::Document;
 use crate::error::{Error, Result};
+use crate::storage::traits::MmapBackedStorage;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -137,6 +138,85 @@ impl BinStorage {
         Self::decode(&data, &self.path)
     }
 
+    /// Load documents and return zero-copy embedding storage via mmap.
+    ///
+    /// Unlike [`load`](Self::load), this memory-maps the file instead of
+    /// reading it entirely into heap.  Metadata (ids, text, key-value
+    /// pairs) is still cloned into owned `String`s, but the embedding
+    /// region stays in the mmap — no heap allocation for vectors.
+    ///
+    /// Returns `(documents, mmap_storage)` where `mmap_storage` provides
+    /// zero-copy `&[f32]` access to the embedding region.  Returns
+    /// `None` for the storage when the file has no embeddings.
+    pub fn load_mmap(&self) -> Result<(Vec<Document>, Option<MmapBackedStorage>)> {
+        let file = std::fs::File::open(&self.path).map_err(|source| Error::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        let mmap = mmap_file(&file)?;
+
+        if mmap.len() < 24 {
+            return Err(Error::Io {
+                path: self.path.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file too short"),
+            });
+        }
+
+        let version = u32::from_le_bytes([mmap[4], mmap[5], mmap[6], mmap[7]]);
+        if version != CURRENT_VERSION {
+            return Err(Error::IncompatibleVersion {
+                path: self.path.clone(),
+                expected: CURRENT_VERSION,
+                got: version,
+            });
+        }
+
+        let dim = u32::from_le_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]) as usize;
+        let count = u32::from_le_bytes([mmap[12], mmap[13], mmap[14], mmap[15]]) as usize;
+        let emb_offset = u64::from_le_bytes([
+            mmap[16], mmap[17], mmap[18], mmap[19], mmap[20], mmap[21], mmap[22], mmap[23],
+        ]) as usize;
+
+        // Parse metadata from mmap (owned Strings, but no embedding allocation)
+        let mut pos = 24;
+        let mut docs = Vec::with_capacity(count);
+        for _ in 0..count {
+            let id_len = read_u16(&mmap, &mut pos, &self.path)? as usize;
+            let id = read_str(&mmap, &mut pos, id_len, &self.path)?;
+
+            let text_len = read_u32(&mmap, &mut pos, &self.path)? as usize;
+            let text = read_str(&mmap, &mut pos, text_len, &self.path)?;
+
+            let meta_count = read_u16(&mmap, &mut pos, &self.path)? as usize;
+            let mut metadata = HashMap::with_capacity(meta_count);
+            for _ in 0..meta_count {
+                let k_len = read_u16(&mmap, &mut pos, &self.path)? as usize;
+                let k = read_str(&mmap, &mut pos, k_len, &self.path)?;
+                let v_len = read_u16(&mmap, &mut pos, &self.path)? as usize;
+                let v = read_str(&mmap, &mut pos, v_len, &self.path)?;
+                metadata.insert(k, v);
+            }
+
+            docs.push(Document {
+                id,
+                text,
+                embedding: Vec::new(),
+                metadata,
+            });
+        }
+
+        // Build zero-copy embedding storage from mmap
+        let emb_storage = if dim > 0 && emb_offset + count * dim * 4 <= mmap.len() {
+            let emb_len = count * dim * 4;
+            let storage = MmapBackedStorage::from_mmap(file, mmap, emb_offset, emb_len);
+            Some(storage)
+        } else {
+            None
+        };
+
+        Ok((docs, emb_storage))
+    }
+
     /// Overwrite the file with the given documents.
     pub fn store(&self, docs: &[Document]) -> Result<()> {
         let bytes = self.encode(docs)?;
@@ -174,7 +254,14 @@ impl BinStorage {
             source,
         })?;
         let _magic = &buf[0..4];
-        let _version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        if version != CURRENT_VERSION {
+            return Err(Error::IncompatibleVersion {
+                path: path.to_path_buf(),
+                expected: CURRENT_VERSION,
+                got: version,
+            });
+        }
         let dim = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
         let count = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize;
         let emb_offset = u64::from_le_bytes([
@@ -269,7 +356,14 @@ impl BinStorage {
         }
 
         let _magic = &data[0..4];
-        let _version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        if version != CURRENT_VERSION {
+            return Err(Error::IncompatibleVersion {
+                path: path.to_path_buf(),
+                expected: CURRENT_VERSION,
+                got: version,
+            });
+        }
         let dim = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
         let count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
         let emb_offset = u64::from_le_bytes([
@@ -384,6 +478,7 @@ fn write_u32(buf: &mut Vec<u8>, val: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::traits::VectorStorage;
     use tempfile::tempdir;
 
     fn make_docs() -> Vec<Document> {
@@ -487,6 +582,103 @@ mod tests {
         assert_eq!(loaded[0].embedding.len(), 1);
         assert_eq!(loaded[0].embedding[0], 0.0);
         assert_eq!(loaded[1].embedding, vec![1.0]);
+    }
+
+    #[test]
+    fn test_load_mmap_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mmap_test.vdb");
+        let storage = BinStorage::new(&path);
+
+        let docs = make_docs();
+        storage.store(&docs).unwrap();
+
+        let (loaded, emb_store) = storage.load_mmap().unwrap();
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded[0].id, "a");
+        assert_eq!(loaded[0].metadata_val("lang"), Some("en"));
+        assert_eq!(loaded[1].id, "b");
+        assert_eq!(loaded[1].metadata_val("source"), Some("book"));
+        assert_eq!(loaded[2].id, "c");
+
+        // Embeddings are in the mmap, not in the documents
+        let emb = emb_store.expect("should have embedding storage");
+        assert_eq!(emb.len(), 9); // 3 docs * 3 dim
+        let floats = emb.as_embeddings();
+        assert!((floats[0] - 0.1).abs() < 1e-6);
+        assert!((floats[3] - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_load_mmap_empty_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty_mmap.vdb");
+        let storage = BinStorage::new(&path);
+        storage.store(&[]).unwrap();
+
+        let (loaded, emb_store) = storage.load_mmap().unwrap();
+        assert!(loaded.is_empty());
+        assert!(emb_store.is_none());
+    }
+
+    #[test]
+    fn test_load_mmap_no_embeddings() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("no_emb_mmap.vdb");
+        let storage = BinStorage::new(&path);
+        storage
+            .store(&[Document::new("a", "hello"), Document::new("b", "world")])
+            .unwrap();
+
+        let (loaded, emb_store) = storage.load_mmap().unwrap();
+        assert_eq!(loaded.len(), 2);
+        // dim=0 when no docs have embeddings → no emb storage
+        assert!(emb_store.is_none());
+    }
+
+    #[test]
+    fn test_load_mmap_version_mismatch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad_ver.vdb");
+
+        // Write a file with version=99 (invalid)
+        let mut data = Vec::new();
+        data.extend_from_slice(b"DVDB");
+        data.extend_from_slice(&99u32.to_le_bytes()); // version=99
+        data.extend_from_slice(&0u32.to_le_bytes()); // dim=0
+        data.extend_from_slice(&0u32.to_le_bytes()); // count=0
+        data.extend_from_slice(&24u64.to_le_bytes()); // emb_offset
+        std::fs::write(&path, &data).unwrap();
+
+        let storage = BinStorage::new(&path);
+        let err = storage.load().unwrap_err();
+        match err {
+            Error::IncompatibleVersion { expected, got, .. } => {
+                assert_eq!(expected, 2);
+                assert_eq!(got, 99);
+            }
+            other => panic!("expected IncompatibleVersion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_load_mmap_consistent_with_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("consistent.vdb");
+        let storage = BinStorage::new(&path);
+        let docs = make_docs();
+        storage.store(&docs).unwrap();
+
+        let loaded_heap = storage.load().unwrap();
+        let (loaded_mmap, _) = storage.load_mmap().unwrap();
+
+        assert_eq!(loaded_heap.len(), loaded_mmap.len());
+        for (a, b) in loaded_heap.iter().zip(loaded_mmap.iter()) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.text, b.text);
+            assert_eq!(a.metadata, b.metadata);
+            // load() fills embeddings into docs; load_mmap() keeps them in mmap
+        }
     }
 }
 
