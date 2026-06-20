@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 /// A scored search result.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct ScoredDocument {
     pub score: f32,
     pub document: Document,
@@ -50,9 +51,11 @@ pub trait Index: Send + Sync {
     /// Delete documents by their IDs.
     ///
     /// Returns the number of documents actually removed.
+    #[must_use]
     fn delete(&mut self, ids: &[&str]) -> usize;
 
     /// Search for the `k` nearest neighbours of `query`.
+    #[must_use]
     fn search(&self, query: &[f32], k: usize) -> Vec<ScoredDocument>;
 
     /// Search with a metadata / content filter.
@@ -60,6 +63,7 @@ pub trait Index: Send + Sync {
     /// Only documents for which `filter` returns `true` are considered.
     /// The default implementation post-filters the regular search results;
     /// override for more efficient pre-filtering.
+    #[must_use]
     fn search_filtered(
         &self,
         query: &[f32],
@@ -75,8 +79,10 @@ pub trait Index: Send + Sync {
     }
 
     /// Number of indexed documents.
+    #[must_use]
     fn len(&self) -> usize;
 
+    #[must_use]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -9,6 +9,20 @@ yanked = "warn"
 notice = "warn"
 ignore = []
 
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "0BSD",
+    "OpenSSL",
+]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

@@ -20,6 +20,7 @@ pub struct Document {
 
 impl Document {
     /// Create a [`DocumentBuilder`] for a fluent construction.
+    #[must_use]
     pub fn builder(id: impl Into<String>, text: impl Into<String>) -> DocumentBuilder {
         DocumentBuilder {
             id: id.into(),
@@ -30,6 +31,7 @@ impl Document {
     }
 
     /// Quick constructor for a document without an embedding.
+    #[must_use]
     pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -40,11 +42,13 @@ impl Document {
     }
 
     /// Dimensionality of the embedding vector.
+    #[must_use]
     pub fn dimension(&self) -> usize {
         self.embedding.len()
     }
 
-    /// Returns `true` if the embedding is non‑empty.
+    /// Returns `true` if the embedding is non-empty.
+    #[must_use]
     pub fn is_embedded(&self) -> bool {
         !self.embedding.is_empty()
     }

@@ -113,10 +113,12 @@ impl Collection {
     }
 
     /// Number of documents in the collection.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -172,6 +174,7 @@ impl Collection {
     /// Search directly with a query vector.
     ///
     /// Uses the index's built-in metric (configured at construction time).
+    #[must_use]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<ScoredDocument> {
         self.index.search(query, k)
     }
@@ -204,6 +207,7 @@ impl Collection {
     /// assert_eq!(results.len(), 1);
     /// assert_eq!(results[0].document.id, "a");
     /// ```
+    #[must_use]
     pub fn search_filtered(
         &self,
         query: &[f32],
@@ -227,6 +231,7 @@ impl Collection {
     ///
     /// Returns `None` when the collection is memory-backed (volatile)
     /// or the binary storage file doesn't exist yet.
+    #[must_use]
     pub fn embedding_storage(&self) -> Option<&Arc<dyn VectorStorage>> {
         self.emb_storage.as_ref()
     }
@@ -269,6 +274,7 @@ impl Collection {
     /// 2. **Fuse** — if both engines are active, apply RRF and keep `2 * top_k`.
     /// 3. **Rerank** — if a reranker is provided and the profile enables it,
     ///    reorder the candidates.  Otherwise truncate directly to `top_k`.
+    #[must_use]
     pub fn hybrid_search(
         &self,
         query_vec: &[f32],
