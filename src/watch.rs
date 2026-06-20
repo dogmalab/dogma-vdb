@@ -3,6 +3,11 @@
 //! Watches source directories for file changes, re-chunks modified
 //! files, and updates a `.vdb` collection automatically.
 //!
+//! Events are debounced — multiple rapid changes to the same file
+//! within the configured window are coalesced into a single
+//! re-indexing pass.  The collection is kept open for the lifetime
+//! of the watcher, avoiding repeated file I/O.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -31,7 +36,7 @@ use crate::error::{Error, Result};
 use crate::smart_chunker::SmartChunker;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use notify::{EventKind, RecursiveMode, Watcher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -44,7 +49,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum WatchEvent {
-    /// A file was created or modified; its chunks were added to the collection.
+    /// A batch of files was re-indexed.
     Updated {
         collection: String,
         docs_added: usize,
@@ -89,7 +94,6 @@ impl Default for WatchConfig {
 // ---------------------------------------------------------------------------
 
 struct WatcherState {
-    /// Map from absolute file path to document ID (for delete tracking).
     path_to_id: Mutex<HashMap<PathBuf, String>>,
     config: WatchConfig,
     tx: Sender<WatchEvent>,
@@ -107,72 +111,87 @@ impl WatcherState {
         }
     }
 
-    /// Process a file: read, chunk, and add to collection.
-    fn process_file(&self, path: &Path) {
+    /// Process a batch of files: read, chunk, and insert into the collection.
+    ///
+    /// Opens the collection once for the entire batch, deletes old chunks
+    /// for modified files, and inserts all new chunks in a single pass.
+    fn process_batch(&self, files: &HashSet<PathBuf>) {
+        if files.is_empty() {
+            return;
+        }
+
         let col_name = self.name();
-        let content = match std::fs::read_to_string(path) {
+        let mut col = match Collection::open_with(&self.config.output, "bruteforce", "cosine") {
             Ok(c) => c,
-            Err(e) => {
-                let _ = self.tx.send(WatchEvent::Error {
-                    collection: col_name,
-                    message: format!("read failed: {e}"),
-                });
-                return;
-            }
-        };
-
-        if content.is_empty() {
-            return;
-        }
-
-        let base_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("doc")
-            .to_string();
-
-        // Chunk the file
-        let docs = self
-            .chunker
-            .chunk_to_docs(path, &content, &base_id, HashMap::new());
-        if docs.is_empty() {
-            return;
-        }
-
-        // Open/insert into collection
-        match Collection::open_with(&self.config.output, "bruteforce", "cosine") {
-            Ok(mut col) => {
-                let count = docs.len();
-                // Delete old chunks for this file path first (if re-processing)
-                if let Ok(map) = self.path_to_id.lock() {
-                    if let Some(old_id) = map.get(path) {
-                        let _ = col.delete(&[old_id.as_str()]);
-                    }
-                }
-                for doc in docs {
-                    if let Err(e) = col.insert(doc) {
-                        let _ = self.tx.send(WatchEvent::Error {
-                            collection: col_name.clone(),
-                            message: format!("insert failed: {e}"),
-                        });
-                        return;
-                    }
-                }
-                // Track the new base ID for this path
-                if let Ok(mut map) = self.path_to_id.lock() {
-                    map.insert(path.to_path_buf(), base_id);
-                }
-                let _ = self.tx.send(WatchEvent::Updated {
-                    collection: col_name,
-                    docs_added: count,
-                });
-            }
             Err(e) => {
                 let _ = self.tx.send(WatchEvent::Error {
                     collection: col_name,
                     message: format!("open collection failed: {e}"),
                 });
+                return;
             }
+        };
+
+        let mut total_added = 0usize;
+
+        for path in files {
+            // Delete old chunks for this file (if re-processing)
+            if let Ok(map) = self.path_to_id.lock() {
+                if let Some(old_id) = map.get(path.as_path()) {
+                    let _ = col.delete(&[old_id.as_str()]);
+                }
+            }
+
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = self.tx.send(WatchEvent::Error {
+                        collection: col_name.clone(),
+                        message: format!("read failed for {}: {e}", path.display()),
+                    });
+                    continue;
+                }
+            };
+
+            if content.is_empty() {
+                continue;
+            }
+
+            let base_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("doc")
+                .to_string();
+
+            let docs = self
+                .chunker
+                .chunk_to_docs(path, &content, &base_id, HashMap::new());
+
+            if docs.is_empty() {
+                continue;
+            }
+
+            let count = docs.len();
+            if let Err(e) = col.insert_batch(&docs) {
+                let _ = self.tx.send(WatchEvent::Error {
+                    collection: col_name.clone(),
+                    message: format!("insert failed for {}: {e}", path.display()),
+                });
+                continue;
+            }
+
+            if let Ok(mut map) = self.path_to_id.lock() {
+                map.insert(path.clone(), base_id);
+            }
+
+            total_added += count;
+        }
+
+        if total_added > 0 {
+            let _ = self.tx.send(WatchEvent::Updated {
+                collection: col_name,
+                docs_added: total_added,
+            });
         }
     }
 
@@ -197,14 +216,16 @@ impl WatcherState {
 
     /// Scan all existing files in source dirs and index them.
     fn initial_scan(&self) {
+        let mut files = HashSet::new();
         for dir in &self.config.source_dirs {
             if !dir.exists() {
                 continue;
             }
             walkdir(dir, &self.config.extensions, &mut |path| {
-                self.process_file(path);
+                files.insert(path.to_path_buf());
             });
         }
+        self.process_batch(&files);
     }
 
     fn name(&self) -> String {
@@ -250,21 +271,25 @@ fn walkdir(dir: &Path, extensions: &[String], f: &mut dyn FnMut(&Path)) {
 /// automatically updates the `.vdb` collection.  Returns a channel
 /// receiver that yields [`WatchEvent`]s.
 ///
+/// Events are debounced: multiple rapid changes to the same file
+/// within `debounce_ms` are coalesced into a single re-indexing pass.
+///
 /// The watcher runs until the returned sender is dropped or the
 /// process exits.
 pub fn start_watching(config: WatchConfig) -> Result<Receiver<WatchEvent>> {
     let (tx, rx) = unbounded::<WatchEvent>();
     let state = WatcherState::new(config.clone(), tx.clone());
 
-    // Initial scan
+    // Initial scan (synchronous, runs before watcher starts)
     if config.initial_scan {
         state.initial_scan();
     }
 
-    // Set up notify watcher
-    let notify_tx = tx.clone();
+    // Channel for raw file events from notify callback
+    let (raw_tx, raw_rx) = unbounded::<(EventKind, PathBuf)>();
     let ext_filter = config.extensions.clone();
 
+    // Spawn notify watcher — sends raw events to raw_tx
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let event = match event {
             Ok(e) => e,
@@ -279,19 +304,10 @@ pub fn start_watching(config: WatchConfig) -> Result<Receiver<WatchEvent>> {
             if !is_watched {
                 continue;
             }
-            match event.kind {
-                EventKind::Create(_) | EventKind::Modify(_) => {
-                    // Debounce via notify's internal debouncing or simple sleep
-                    state.process_file(path);
-                }
-                EventKind::Remove(_) => {
-                    state.remove_file(path);
-                }
-                _ => {}
-            }
+            let _ = raw_tx.send((event.kind, path.clone()));
         }
     })
-    .map_err(|_e| Error::FeatureNotAvailable("watch"))?;
+    .map_err(|_| Error::FeatureNotAvailable("watch"))?;
 
     // Watch each source directory
     for dir in &config.source_dirs {
@@ -301,13 +317,47 @@ pub fn start_watching(config: WatchConfig) -> Result<Receiver<WatchEvent>> {
     }
 
     // Keep watcher alive on a background thread
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(3600));
+    });
+
+    // Debounce + batch processing thread
+    let debounce = Duration::from_millis(config.debounce_ms);
     std::thread::spawn(move || {
-        // The watcher is kept alive by this thread; when it exits, the
-        // watcher drops and stops sending events.
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+
         loop {
-            std::thread::sleep(Duration::from_secs(3600));
-            if notify_tx.send(WatchEvent::Stopped).is_err() {
-                break;
+            // Wait for next event or debounce timeout
+            match raw_rx.recv_timeout(debounce) {
+                Ok((kind, path)) => match kind {
+                    EventKind::Create(_) | EventKind::Modify(_) => {
+                        pending.insert(path);
+                    }
+                    EventKind::Remove(_) => {
+                        // Flush pending file changes before handling delete
+                        if !pending.is_empty() {
+                            state.process_batch(&pending);
+                            pending.clear();
+                        }
+                        state.remove_file(&path);
+                    }
+                    _ => {}
+                },
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Debounce window expired — flush accumulated files
+                    if !pending.is_empty() {
+                        state.process_batch(&pending);
+                        pending.clear();
+                    }
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    // Channel closed — flush remaining and exit
+                    if !pending.is_empty() {
+                        state.process_batch(&pending);
+                    }
+                    let _ = state.tx.send(WatchEvent::Stopped);
+                    break;
+                }
             }
         }
     });

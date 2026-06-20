@@ -2,7 +2,12 @@
 //! large operations (insert, build_index, chunking). Returns a clear error
 //! instead of letting the OOM-killer kill the process.
 //!
-//! Falls back to `Normal` on non-Linux platforms.
+//! **Linux only.** On non-Linux platforms (macOS, Windows), `read_meminfo_kb`
+//! returns `None` and all checks return `Normal`.  This is a deliberate
+//! trade-off: Linux is the primary deployment target for vector databases,
+//! and `/proc/meminfo` is the most reliable source of memory availability.
+//! On other platforms, memory pressure detection should be handled by the
+//! embedding runtime (e.g., ONNX Runtime) or the OS itself.
 
 use crate::error::{Error, Result};
 
