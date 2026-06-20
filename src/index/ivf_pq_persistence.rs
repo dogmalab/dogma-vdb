@@ -20,7 +20,6 @@
 use crate::doc::Document;
 use crate::error::{Error, Result};
 use crate::index::ivf_pq::{IvfPqConfig, IvfPqIndex};
-use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Write;
@@ -35,6 +34,9 @@ struct MetaFile {
     config: MetaConfig,
     centroids: Vec<Vec<f32>>,
     codebooks: Vec<Vec<Vec<f32>>>,
+    /// Number of stale (incrementally-added) documents.
+    #[serde(default)]
+    stale_docs: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,6 +149,7 @@ pub fn save(index: &IvfPqIndex, base: &Path) -> Result<()> {
         },
         centroids: index.centroids().to_vec(),
         codebooks: index.codebooks().to_vec(),
+        stale_docs: index.stale_docs(),
     };
 
     let meta_str = serde_json::to_string_pretty(&meta)
@@ -210,10 +213,8 @@ pub fn load(base: &Path, config: &IvfPqConfig) -> Result<Option<IvfPqIndex>> {
         path: jsonl_path(base),
         source: e,
     })?;
-    // SAFETY: memmap2 0.9 — caller guarantees no external truncation.
-    let mmap =
-        unsafe { Mmap::map(&file) }.map_err(|e| Error::Internal(format!("IVF-PQ mmap: {e}")))?;
-    let _ = mmap.advise(memmap2::Advice::Random);
+    let mmap = crate::storage::mmap_file(&file)
+        .map_err(|e| Error::Internal(format!("IVF-PQ mmap: {e}")))?;
     let mmap_slice: &[u8] = &mmap;
 
     // ── Pre-allocate from file-size heuristic (~128 bytes/line avg) ──
@@ -318,6 +319,7 @@ pub fn load(base: &Path, config: &IvfPqConfig) -> Result<Option<IvfPqIndex>> {
         meta.codebooks,
         codes,
         clusters,
+        meta.stale_docs,
     )))
 }
 
@@ -332,10 +334,10 @@ pub fn load(base: &Path, config: &IvfPqConfig) -> Result<Option<IvfPqIndex>> {
 /// soft-deleted or overwritten lines (e.g. via append-mode operations).
 /// No-op when the waste ratio is below `threshold` (default 0.2 = 20%).
 ///
-/// ## Invariante
-/// Solo elimina líneas — nunca modifica `cluster` o `code`.
-/// El archivo `.meta` permanece válido sin cambios porque los centroids
-/// y codebooks son inmutables entre saves explícitos.
+/// ## Invariant
+/// Only removes lines — never modifies `cluster` or `code`.
+/// The `.meta` file stays valid unchanged because centroids and codebooks
+/// are immutable between explicit saves.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn compact(base: &Path, threshold: f32) -> Result<()> {
     let jp = jsonl_path(base);
@@ -344,17 +346,15 @@ pub fn compact(base: &Path, threshold: f32) -> Result<()> {
     }
 
     // Load current lines via mmap (no heap allocation for the data itself)
-    let file = std::fs::File::open(&jp).map_err(|e| Error::Io {
-        path: jp.clone(),
-        source: e,
-    })?;
-    let mmap = unsafe { Mmap::map(&file) }
+    let mmap = crate::storage::mmap_path(&jp)
         .map_err(|e| Error::Internal(format!("IVF-PQ compact mmap: {e}")))?;
-    let _ = mmap.advise(memmap2::Advice::Random);
     let slice: &[u8] = &mmap;
 
     // Count total non-empty lines — lazy iterator, no Vec allocation
-    let total = slice.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count();
+    let total = slice
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .count();
     if total == 0 {
         return Ok(());
     }
@@ -608,6 +608,7 @@ mod tests {
             },
             centroids: vec![vec![0.0; 16]; 4],
             codebooks: vec![vec![vec![0.0; 2]; 256]; 8],
+            stale_docs: 0,
         };
         std::fs::write(&mp, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
 

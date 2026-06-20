@@ -1,18 +1,18 @@
-//! Benchmark Grid Exhaustivo para dogma-vdb
+//! Comprehensive grid benchmark for dogma-vdb.
 //!
-//! Mide de forma combinada (Grid Testing):
-//!   - Tamaños: 100K, 1M vectores (configurable)
-//!   - Dimensiones: 384, 1536
-//!   - Métricas: Cosine, L2
-//!   - Índices: BF, HNSW (M, ef variants), IVF-PQ (nlist, M variants)
+//! Measures (Grid Testing):
+//!   - Sizes: 100K, 1M vectors (configurable)
+//!   - Dimensions: 384, 1536
+//!   - Metrics: Cosine, L2
+//!   - Indices: BF, HNSW (M, ef variants), IVF-PQ (nlist, M variants)
 //!
-//! Output: JSON raw + BENCHMARK.md formateado.
+//! Output: raw JSON + formatted BENCHMARK.md.
 //!
-//! Uso:
+//! Usage:
 //!   cargo run --release --example bench_grid --features chunker-syntax
 //!   cargo run --release --example bench_grid --features chunker-syntax -- --quick  (solo 100K)
 //!
-//! Dependencias: ninguna externa (usa solo std + dogma-vdb)
+//! No external dependencies beyond dogma-vdb.
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
@@ -25,27 +25,27 @@ use std::time::Instant;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 // ============================================================================
-// Configuracion del Grid
+// Grid Configuration
 // ============================================================================
 
-/// Cambiar estas constantes para controlar que se ejecuta.
+/// Tweak these constants to control the benchmark run.
 const SIZES: &[usize] = &[100_000];
 const DIMS: &[usize] = &[384];
 const METRICS: &[Metric] = &[Metric::Cosine];
 
-/// HNSW — variar M (conexiones) y ef (candidatos)
+/// HNSW — vary M (connections) and ef (candidates)
 const HNSW_M_VALS: &[usize] = &[16];
 const HNSW_EF_VALS: &[usize] = &[50, 200];
 
-/// IVF-PQ — variar nlist y m_subspaces
+/// IVF-PQ — vary nlist and m_subspaces
 const IVF_NLIST_VALS: &[usize] = &[256];
 const IVF_M_SUB_VALS: &[usize] = &[16];
 
-const QUERY_ITERS: usize = 100; // queries por config
-const WARMUP: usize = 3; // warmup antes de medir
+const QUERY_ITERS: usize = 100; // queries per config
+const WARMUP: usize = 3; // warmup iterations before measurement
 
 // ============================================================================
-// Generacion de datos deterministicos (SplitMix64)
+// Deterministic data generation (SplitMix64)
 // ============================================================================
 
 // SEED_COUNTER no longer needed — seed_from_id is self-contained
@@ -85,7 +85,7 @@ fn make_test_data(n: usize, dim: usize) -> TestData {
         })
         .collect();
 
-    // 50 queries fijas (primeros 50 docs, con seed distinta)
+    // 50 fixed queries (first 50 docs, different seed)
     let queries: Vec<Vec<f32>> = (0..50)
         .map(|i| {
             let seed = seed_from_id(i as u64 + 999_999, dim as u64);
@@ -117,9 +117,9 @@ fn read_vmrss_kb() -> u64 {
     0
 }
 
-/// Mide el delta de RSS durante la ejecucion de `f`.
-/// Usa VmRSS (Resident Set Size) para capturar la memoria fisica real
-/// asignada en el momento exacto, no el pico historico del proceso.
+/// Measures the RSS delta during execution of `f`.
+/// Uses VmRSS (Resident Set Size) to capture physical memory
+/// allocated at the exact moment, not the historical peak.
 fn measure_ram_delta<F: FnOnce()>(f: F) -> u64 {
     let before = read_vmrss_kb();
     f();
@@ -160,7 +160,7 @@ fn compute_latency_stats(latencies_us: &[f64]) -> LatencyStats {
 }
 
 // ============================================================================
-// Resultado por configuracion
+// Per-configuration result
 // ============================================================================
 
 #[derive(Debug, Clone)]
@@ -801,7 +801,7 @@ fn main() {
                 bf.insert(&data.docs);
                 let exact_results: Vec<_> =
                     data.queries.iter().map(|q| bf.search(q, 100)).collect();
-                // BF ground truth ya no se necesita — los resultados están en exact_results
+                // BF ground truth no longer needed — results are in exact_results
                 drop(bf);
                 eprintln!("  Done.");
 
@@ -860,7 +860,7 @@ fn main() {
                 );
                 master_md.push_str(&section);
 
-                // Liberar memoria
+                // Free memory
                 drop(data);
                 drop(bf_result);
                 drop(hnsw_results);

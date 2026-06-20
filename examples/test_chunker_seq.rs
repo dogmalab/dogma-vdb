@@ -1,17 +1,17 @@
-// Test: chunkear .md + .py pequeño, ver si se cuelga después de N archivos
+// Test: chunk .md + small .py to check hang after N files
 use dogma_vdb::doc::Document;
 use dogma_vdb::smart_chunker::SmartChunker;
 use std::collections::HashMap;
 use std::path::Path;
 
 fn main() {
-    eprintln!("═══ Test Chunker secuencial ═══");
+    eprintln!("═══ Sequential Chunker Test ═══");
 
     let root = Path::new("/home/arggil/Documents/DEV-WORKSPACE/hermes-agent");
     let chunker = SmartChunker::default();
     let mut all_docs: Vec<Document> = Vec::new();
 
-    // 15 archivos .md (RELEASE_*.md)
+    // 15 .md files (RELEASE_*.md)
     for i in 0..15 {
         let path = root.join(format!("RELEASE_v0.{}.md", i));
         if !path.exists() {
@@ -31,22 +31,26 @@ fn main() {
         );
     }
 
-    // Ahora batch_runner.py (54 KB)
+    // batch_runner.py (54 KB)
     let path = root.join("batch_runner.py");
     if path.exists() {
         let content = std::fs::read_to_string(&path).unwrap();
         let docs = chunker.chunk_to_docs(&path, &content, "batch-runner", HashMap::new());
         let n = docs.len();
         all_docs.extend(docs);
-        eprintln!("  [py] batch_runner.py -> {} chunks (total: {})", n, all_docs.len());
+        eprintln!(
+            "  [py] batch_runner.py -> {} chunks (total: {})",
+            n,
+            all_docs.len()
+        );
     }
 
-    // Ahora cli.py (532 KB)
-    eprintln!("  Procesando cli.py...");
+    // cli.py (532 KB)
+    eprintln!("  Processing cli.py...");
     let path = root.join("cli.py");
     let content = std::fs::read_to_string(&path).unwrap();
     eprintln!(
-        "  Leído cli.py: {} bytes, {} líneas",
+        "  Read cli.py: {} bytes, {} lines",
         content.len(),
         content.lines().count()
     );

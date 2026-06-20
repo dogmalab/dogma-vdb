@@ -1,18 +1,18 @@
-//! Benchmark Grid Exhaustivo para dogma-vdb
+//! Comprehensive grid benchmark for dogma-vdb.
 //!
-//! Mide de forma combinada (Grid Testing):
-//!   - Tamaños: 100K, 1M vectores (configurable)
-//!   - Dimensiones: 384, 1536
-//!   - Métricas: Cosine, L2
-//!   - Índices: BF, HNSW (M, ef variants), IVF-PQ (nlist, M variants)
+//! Measures (Grid Testing):
+//!   - Sizes: 100K, 1M vectors (configurable)
+//!   - Dimensions: 384, 1536
+//!   - Metrics: Cosine, L2
+//!   - Indices: BF, HNSW (M, ef variants), IVF-PQ (nlist, M variants)
 //!
-//! Output: JSON raw + BENCHMARK.md formateado.
+//! Output: raw JSON + formatted BENCHMARK.md.
 //!
-//! Uso:
-//!   cargo run --release --example bench_grid --features chunker-syntax
-//!   cargo run --release --example bench_grid --features chunker-syntax -- --quick  (solo 100K)
+//! Usage:
+//!   cargo run --release --bin dogma-vdb-grid-bench --features chunker-syntax
+//!   cargo run --release --bin dogma-vdb-grid-bench --features chunker-syntax -- --quick
 //!
-//! Dependencias: ninguna externa (usa solo std + dogma-vdb)
+//! No external dependencies beyond dogma-vdb.
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
@@ -23,28 +23,77 @@ use std::path::Path;
 use std::time::Instant;
 
 // ============================================================================
-// Configuracion del Grid
+// Grid Configuration
 // ============================================================================
 
-/// Cambiar estas constantes para controlar que se ejecuta.
+/// Tweak these constants to control the benchmark run.
 const SIZES: &[usize] = &[10_000];
 const DIMS: &[usize] = &[128];
 const METRICS: &[Metric] = &[Metric::Cosine];
 
-/// HNSW — variar M (conexiones) y ef (candidatos)
+/// HNSW — vary M (connections) and ef (candidates)
 const HNSW_M_VALS: &[usize] = &[16, 32];
 const HNSW_EF_VALS: &[usize] = &[50, 100, 150, 200];
 
-/// IVF-PQ — fijo nlist=256, M_sub=8, variar n_probe
+/// IVF-PQ — fixed nlist=256, M_sub=8, vary n_probe
 const IVF_NLIST_VALS: &[usize] = &[256];
 const IVF_M_SUB_VALS: &[usize] = &[8];
 const IVF_NPROBE_VALS: &[usize] = &[1, 2, 4, 8, 16, 32];
 
-/// Umbral de recall para considerar una configuracion valida
+/// Recall threshold for a configuration to be considered valid
 const RECALL_THRESHOLD: f64 = 0.90;
 
-const QUERY_ITERS: usize = 50; // queries por config
-const WARMUP: usize = 3; // warmup antes de medir
+const QUERY_ITERS: usize = 50; // queries per config variation
+const WARMUP: usize = 3; // warmup iterations before measurement
+
+const DEFAULT_SEED: u64 = 42;
+
+// ============================================================================
+// Argument parsing (simple, no clap dep needed)
+// ============================================================================
+
+struct Args {
+    seed: u64,
+    output_json: bool,
+    quick: bool,
+}
+
+fn parse_args() -> Args {
+    let args: Vec<String> = std::env::args().collect();
+    let mut seed = DEFAULT_SEED;
+    let mut output_json = false;
+    let mut quick = false;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seed" => {
+                i += 1;
+                seed = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .expect("--seed requires a u64 value");
+            }
+            "--output" => {
+                i += 1;
+                let val = args.get(i).expect("--output requires a format (json)");
+                if val == "json" {
+                    output_json = true;
+                } else {
+                    eprintln!("WARNING: unknown output format '{}', ignoring", val);
+                }
+            }
+            "--quick" => quick = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    Args {
+        seed,
+        output_json,
+        quick,
+    }
+}
 
 // ============================================================================
 // Generacion de datos deterministicos (SplitMix64)
@@ -58,8 +107,11 @@ struct TestData {
     n: usize,
 }
 
-fn seed_from_id(id: u64, dim: u64) -> u64 {
-    id.wrapping_mul(dim).wrapping_mul(0x9E3779B97F4A7C15)
+fn seed_from_id(id: u64, dim: u64, global_seed: u64) -> u64 {
+    global_seed
+        .wrapping_mul(id)
+        .wrapping_mul(dim)
+        .wrapping_mul(0x9E3779B97F4A7C15)
 }
 
 fn random_vec(seed: u64, dim: usize) -> Vec<f32> {
@@ -75,20 +127,20 @@ fn random_vec(seed: u64, dim: usize) -> Vec<f32> {
         .collect()
 }
 
-fn make_test_data(n: usize, dim: usize) -> TestData {
+fn make_test_data(n: usize, dim: usize, global_seed: u64) -> TestData {
     let docs: Vec<Document> = (0..n)
         .map(|i| {
-            let seed = seed_from_id(i as u64, dim as u64);
+            let seed = seed_from_id(i as u64, dim as u64, global_seed);
             Document::builder(format!("d{i}"), format!("doc {i}"))
                 .embedding(random_vec(seed, dim))
                 .build()
         })
         .collect();
 
-    // 50 queries fijas (primeros 50 docs, con seed distinta)
+    // 50 fixed queries (first 50 docs, different seed)
     let queries: Vec<Vec<f32>> = (0..50)
         .map(|i| {
-            let seed = seed_from_id(i as u64 + 999_999, dim as u64);
+            let seed = seed_from_id(i as u64 + 999_999, dim as u64, global_seed);
             random_vec(seed, dim)
         })
         .collect();
@@ -117,9 +169,9 @@ fn read_vmrss_kb() -> u64 {
     0
 }
 
-/// Mide el delta de RSS durante la ejecucion de `f`.
-/// Usa VmRSS (Resident Set Size) para capturar la memoria fisica real
-/// asignada en el momento exacto, no el pico historico del proceso.
+/// Measures the RSS delta during execution of `f`.
+/// Uses VmRSS (Resident Set Size) to capture physical memory
+/// allocated at the exact moment, not the historical peak.
 fn measure_ram_delta<F: FnOnce()>(f: F) -> u64 {
     let before = read_vmrss_kb();
     f();
@@ -160,7 +212,7 @@ fn compute_latency_stats(latencies_us: &[f64]) -> LatencyStats {
 }
 
 // ============================================================================
-// Resultado por configuracion
+// Per-configuration result
 // ============================================================================
 
 #[derive(Debug, Clone)]
@@ -244,7 +296,7 @@ fn bench_bf(data: &TestData, ctx: &BenchContext) -> IndexResult {
     let _res = bf.search(&ctx.queries[0], 100);
 
     IndexResult {
-        label: format!("BF"),
+        label: "BF".to_string(),
         build_time_s: build_time.as_secs_f64(),
         index_throughput: throughput,
         peak_ram_mb: ram as f64 / 1024.0,
@@ -423,10 +475,10 @@ fn write_markdown_table(w: &mut String, title: &str, headers: &[&str], rows: &[V
     w.push_str("| ");
     w.push_str(&headers.join(" | "));
     w.push_str(" |\n");
-    w.push_str("|");
+    w.push('|');
     for h in headers {
         w.push_str(&"-".repeat(h.len() + 2));
-        w.push_str("|");
+        w.push('|');
     }
     w.push('\n');
     for row in rows {
@@ -647,8 +699,15 @@ fn append_json(json_path: &Path, entry: &serde_json::Value) {
     fs::write(json_path, serde_json::to_string_pretty(&data).unwrap()).ok();
 }
 
-fn result_to_json(r: &IndexResult, n: usize, dim: usize, metric: Metric) -> serde_json::Value {
+fn result_to_json(
+    r: &IndexResult,
+    n: usize,
+    dim: usize,
+    metric: Metric,
+    seed: u64,
+) -> serde_json::Value {
     serde_json::json!({
+        "seed": seed,
         "label": r.label,
         "n": n,
         "dim": dim,
@@ -725,14 +784,16 @@ fn bench_chunking() -> (f64, f64, u64) {
 // ============================================================================
 
 fn main() {
+    let args = parse_args();
     let out_dir = Path::new("benchmarks");
     let _ = fs::create_dir_all(out_dir);
     let json_path = out_dir.join("bench_results.json");
 
-    let quick = std::env::args().any(|a| a == "--quick");
+    let quick = args.quick;
     let sizes: &[usize] = if quick { &[100_000] } else { SIZES };
 
     eprintln!("dogma-vdb Grid Benchmark");
+    eprintln!("  Seed: {}", args.seed);
     eprintln!("  Sizes: {:?}", sizes);
     eprintln!("  Dims: {:?}", DIMS);
     eprintln!(
@@ -790,7 +851,7 @@ fn main() {
             for &metric in METRICS {
                 eprintln!("\n=== {} docs, {} dim, {:?} ===", n, dim, metric);
                 eprintln!("Generating data...");
-                let data = make_test_data(n, dim);
+                let data = make_test_data(n, dim, args.seed);
                 eprintln!("  Done. {} vectors, {} dim", data.n, data.dim);
 
                 // Ground truth: BruteForce (para recall)
@@ -811,7 +872,10 @@ fn main() {
                 // BF itself
                 eprintln!("Benchmarking BF...");
                 let bf_result = bench_bf(&data, &ctx);
-                append_json(&json_path, &result_to_json(&bf_result, n, dim, metric));
+                append_json(
+                    &json_path,
+                    &result_to_json(&bf_result, n, dim, metric, args.seed),
+                );
 
                 // HNSW grid
                 let mut hnsw_results = Vec::new();
@@ -819,7 +883,7 @@ fn main() {
                     for &ef in HNSW_EF_VALS {
                         eprintln!("Benchmarking HNSW M={} ef={}...", m, ef);
                         let r = bench_hnsw(&data, &ctx, m, ef);
-                        append_json(&json_path, &result_to_json(&r, n, dim, metric));
+                        append_json(&json_path, &result_to_json(&r, n, dim, metric, args.seed));
                         hnsw_results.push(r);
                     }
                 }
@@ -837,7 +901,7 @@ fn main() {
                         for &np in IVF_NPROBE_VALS {
                             eprintln!("Benchmarking IVF-PQ nlist={} M={} probe={}...", nl, ms, np);
                             let r = bench_ivfpq(&data, &ctx, nl, ms, np);
-                            append_json(&json_path, &result_to_json(&r, n, dim, metric));
+                            append_json(&json_path, &result_to_json(&r, n, dim, metric, args.seed));
                             ivf_results.push(r);
                         }
                     }
@@ -859,7 +923,7 @@ fn main() {
                 );
                 master_md.push_str(&section);
 
-                // Liberar memoria
+                // Free memory
                 drop(data);
                 drop(bf_result);
                 drop(hnsw_results);
@@ -876,7 +940,7 @@ fn main() {
     // ─── FASE 3 & 4: Scoring + TUNING_REPORT.md ───────────────────────────
     eprintln!("\nAnalizando resultados y generando TUNING_REPORT.md...");
 
-    // Leer resultados desde JSON para analisis independiente
+    // Read results from JSON for independent analysis
     let tuning_md = generate_tuning_report(&json_path);
 
     let tuning_path = out_dir.join("TUNING_REPORT.md");
@@ -888,19 +952,26 @@ fn main() {
         json_path.display(),
         tuning_path.display()
     );
+
+    // ─── --output json: dump results to stdout ──────────────────────
+    if args.output_json {
+        if let Ok(json_str) = fs::read_to_string(&json_path) {
+            println!("{}", json_str);
+        }
+    }
 }
 
 // ============================================================================
-// FASE 3: Funcion de puntuacion (Scoring) y generacion del reporte
+// PHASE 3: Scoring function and report generation
 // ============================================================================
 
-/// Genera el reporte de calibracion con las top-3 configuraciones para
-/// HNSW e IVF-PQ, calculando Score = QPS / RAM_MB (solo si Recall@10 >= 90%).
+/// Generates the calibration report with top-3 configurations for
+/// HNSW and IVF-PQ, computing Score = QPS / RAM_MB (only if Recall@10 >= 90%).
 fn generate_tuning_report(json_path: &Path) -> String {
     let mut report = String::new();
     report.push_str("# Tuning Report — Dogma-VDB Autonomous Calibration\n\n");
     report.push_str(&format!(
-        "> Generado automaticamente | Umbral Recall@10 >= {}%\n\n",
+        "> Auto-generated | Recall@10 >= {}% threshold\n\n",
         (RECALL_THRESHOLD * 100.0) as u8
     ));
     report.push_str("## Metodologia\n\n");
@@ -909,7 +980,7 @@ fn generate_tuning_report(json_path: &Path) -> String {
     report.push_str("- Si Recall@10 >= 90% → **Score = QPS / RAM_MB**\n");
     report.push_str("- Mayor score = mejor eficiencia (maximos QPS por MB de RAM)\n\n");
 
-    // Cargar resultados desde JSON
+    // Load results from JSON
     let json_str = match fs::read_to_string(json_path) {
         Ok(s) => s,
         Err(_) => {

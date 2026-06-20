@@ -117,6 +117,13 @@ pub trait Embedder: Send + Sync {
 - `# Examples` in docstrings (run with `cargo test --doc`).
 - `#[must_use]` on functions whose result should not be ignored.
 
+### 8. Comments in English, minimal, purposeful
+
+- **All comments must be in English.** No Spanish, no mixed-language comments.
+- **Reduce comments to the minimum necessary.** The code should speak about the application, not the comments. Every comment must justify its existence — if the code is self-explanatory, delete the comment.
+- `//` comments document *why*, not *what*. Let types, variable names, and function signatures express *what*.
+- `///` doc comments document the public API for consumers. They are not the place for implementation notes.
+
 ---
 
 ## ❌ What We DON'T Do
@@ -171,7 +178,19 @@ let doc = docs.iter().find(|d| d.id == "x")
 
 CI fails with `-D warnings`. Silencing warnings with `#[allow(...)]` only if there is a justified and documented reason.
 
-### 7. ANN Index (HNSW) — rules
+### 7. DON'T write comments that repeat the code
+
+```rust
+// WRONG — comment repeats what the code already says
+// Increment the counter by one
+counter += 1;
+
+// RIGHT — comment explains why, not what
+// Skip padding bytes added by the serializer
+offset += ALIGNMENT_PAD;
+```
+
+### 8. ANN Index (HNSW) — rules
 
 The approximate index complements `BruteForceIndex` without replacing it:
 

@@ -7,7 +7,7 @@
 //! - `index_type = "bruteforce"` (default) — precise O(n·d) search
 //! - `index_type = "hnsw"` — approximate O(log n) search
 
-use crate::config::CONFIG;
+use crate::config::{CollectionConfig, CONFIG};
 use crate::distance::Metric;
 use crate::doc::Document;
 use crate::error::Result;
@@ -44,73 +44,33 @@ impl Collection {
     /// The index type and parameters are read from the global config
     /// (`config.toml` or env vars).
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        let cfg = &CONFIG.collection;
-        let path: PathBuf = path.into();
-        let metric = parse_metric(&cfg.index_metric);
-
-        let index: Box<dyn Index> = match cfg.index_type.as_str() {
-            "hnsw" => Box::new(HnswIndex::new(HnswConfig {
-                m: cfg.hnsw_m,
-                ef_construction: cfg.hnsw_ef_construction,
-                ef_search: cfg.hnsw_ef_search,
-                metric,
-                flat_embeddings: cfg.hnsw_flat_embeddings,
-                sq: cfg.sq,
-                sq_rescore: cfg.sq_rescore,
-            })),
-            "ivf_pq" => {
-                let ivf_cfg = IvfPqConfig {
-                    n_list: cfg.ivf_pq_n_clusters,
-                    m_subspaces: cfg.ivf_pq_n_subvectors,
-                    n_probe: cfg.ivf_pq_n_probe,
-                    metric,
-                    rerank_enabled: std::env::var("DOGMA_RERANK").as_deref() == Ok("1"),
-                };
-                ivf_cfg.validate()?;
-                Box::new(IvfPqIndex::new(ivf_cfg))
-            }
-            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
-        };
-
-        Self::build(path, index)
+        Self::open_with_config(path, &CONFIG.collection)
     }
 
-    /// Open a collection with an explicit index type override.
+    /// Open a collection with an explicit index type and metric override.
     ///
     /// `index_type` can be `"bruteforce"`, `"hnsw"`, or `"ivf_pq"`.
+    /// HNSW/IVF-PQ parameters are still read from the global config.
     pub fn open_with(
         path: impl Into<PathBuf>,
         index_type: &str,
         index_metric: &str,
     ) -> Result<Self> {
-        let cfg = &CONFIG.collection;
+        let mut cfg = CONFIG.collection.clone();
+        cfg.index_type = index_type.to_string();
+        cfg.index_metric = index_metric.to_string();
+        Self::open_with_config(path, &cfg)
+    }
+
+    /// Open (or create) a collection with an explicit [`CollectionConfig`].
+    ///
+    /// This is the primary constructor — all other `open*` methods
+    /// delegate to this one.  Use it when you need full control over
+    /// index type, metric, and HNSW/IVF-PQ parameters without relying
+    /// on the global config.
+    pub fn open_with_config(path: impl Into<PathBuf>, cfg: &CollectionConfig) -> Result<Self> {
         let path: PathBuf = path.into();
-        let metric = parse_metric(index_metric);
-
-        let index: Box<dyn Index> = match index_type {
-            "hnsw" => Box::new(HnswIndex::new(HnswConfig {
-                m: cfg.hnsw_m,
-                ef_construction: cfg.hnsw_ef_construction,
-                ef_search: cfg.hnsw_ef_search,
-                metric,
-                flat_embeddings: cfg.hnsw_flat_embeddings,
-                sq: cfg.sq,
-                sq_rescore: cfg.sq_rescore,
-            })),
-            "ivf_pq" => {
-                let ivf_cfg = IvfPqConfig {
-                    n_list: cfg.ivf_pq_n_clusters,
-                    m_subspaces: cfg.ivf_pq_n_subvectors,
-                    n_probe: cfg.ivf_pq_n_probe,
-                    metric,
-                    rerank_enabled: std::env::var("DOGMA_RERANK").as_deref() == Ok("1"),
-                };
-                ivf_cfg.validate()?;
-                Box::new(IvfPqIndex::new(ivf_cfg))
-            }
-            _ => Box::new(BruteForceIndex::new_with(metric, cfg.sq, cfg.sq_rescore)),
-        };
-
+        let index = build_index(cfg)?;
         Self::build(path, index)
     }
 
@@ -316,22 +276,20 @@ impl Collection {
         })?;
         let mut writer = std::io::BufWriter::new(file);
         for doc in self.index.documents() {
-            let line = serde_json::to_string(doc).map_err(|source| {
-                crate::error::Error::ParseJson {
+            let line =
+                serde_json::to_string(doc).map_err(|source| crate::error::Error::ParseJson {
                     line: 0,
                     detail: "failed to serialize document".into(),
                     source,
-                }
-            })?;
+                })?;
             writeln!(writer, "{}", line).map_err(|source| crate::error::Error::Io {
                 path: path.clone(),
                 source,
             })?;
         }
-        writer.flush().map_err(|source| crate::error::Error::Io {
-            path,
-            source,
-        })?;
+        writer
+            .flush()
+            .map_err(|source| crate::error::Error::Io { path, source })?;
         Ok(())
     }
 
@@ -401,10 +359,7 @@ impl Collection {
 
         // Without reranker: sort fused, truncate, then hydrate only top-k
         let mut fused = fused;
-        fused.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        fused.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         fused.truncate(top_k);
         fused
             .into_iter()
@@ -443,6 +398,40 @@ fn parse_metric(s: &str) -> Metric {
         "dot" | "dot_product" => Metric::Dot,
         "euclidean" | "l2" => Metric::Euclidean,
         _ => Metric::Cosine,
+    }
+}
+
+/// Build the appropriate index backend from a [`CollectionConfig`].
+fn build_index(cfg: &CollectionConfig) -> Result<Box<dyn Index>> {
+    let metric = parse_metric(&cfg.index_metric);
+
+    match cfg.index_type.as_str() {
+        "hnsw" => Ok(Box::new(HnswIndex::new(HnswConfig {
+            m: cfg.hnsw_m,
+            ef_construction: cfg.hnsw_ef_construction,
+            ef_search: cfg.hnsw_ef_search,
+            metric,
+            flat_embeddings: cfg.hnsw_flat_embeddings,
+            sq: cfg.sq,
+            sq_rescore: cfg.sq_rescore,
+        }))),
+        "ivf_pq" => {
+            let ivf_cfg = IvfPqConfig {
+                n_list: cfg.ivf_pq_n_clusters,
+                m_subspaces: cfg.ivf_pq_n_subvectors,
+                n_probe: cfg.ivf_pq_n_probe,
+                metric,
+                rerank_enabled: std::env::var("DOGMA_RERANK").as_deref() == Ok("1"),
+                ..IvfPqConfig::default()
+            };
+            ivf_cfg.validate()?;
+            Ok(Box::new(IvfPqIndex::new(ivf_cfg)))
+        }
+        _ => Ok(Box::new(BruteForceIndex::new_with(
+            metric,
+            cfg.sq,
+            cfg.sq_rescore,
+        ))),
     }
 }
 
@@ -779,23 +768,20 @@ mod tests {
         // No documents — but we can still test that the profile dispatch works
 
         let cfg_fast = QueryPipelineConfig {
-            profile: PerformanceProfile::VelocidadExtrema,
+            profile: PerformanceProfile::MaxSpeed,
             top_k: 3,
         };
 
-        // VelocidadExtrema: BM25 inactive → empty BM25 results
+        // MaxSpeed: BM25 inactive → empty BM25 results
         let results = col.hybrid_search(&[1.0, 0.0], "anything", None, None, &cfg_fast);
         assert!(
             results.is_empty(),
-            "empty collection with VelocidadExtrema returns empty"
+            "empty collection with MaxSpeed returns empty"
         );
 
         // Verify profile flags
-        assert!(!cfg_fast.use_bm25(), "VelocidadExtrema should not use BM25");
-        assert!(
-            !cfg_fast.use_reranker(),
-            "VelocidadExtrema should not use reranker"
-        );
+        assert!(!cfg_fast.use_bm25(), "MaxSpeed should not use BM25");
+        assert!(!cfg_fast.use_reranker(), "MaxSpeed should not use reranker");
 
         let cfg_precision = QueryPipelineConfig {
             profile: PerformanceProfile::PrecisionLocal,
@@ -807,14 +793,14 @@ mod tests {
             "PrecisionLocal should use reranker"
         );
 
-        let cfg_hibrido = QueryPipelineConfig {
-            profile: PerformanceProfile::ProduccionHibrido,
+        let cfg_hybrid = QueryPipelineConfig {
+            profile: PerformanceProfile::HybridProduction,
             top_k: 3,
         };
-        assert!(cfg_hibrido.use_bm25(), "ProduccionHibrido should use BM25");
+        assert!(cfg_hybrid.use_bm25(), "HybridProduction should use BM25");
         assert!(
-            cfg_hibrido.use_reranker(),
-            "ProduccionHibrido should use reranker"
+            cfg_hybrid.use_reranker(),
+            "HybridProduction should use reranker"
         );
     }
 }

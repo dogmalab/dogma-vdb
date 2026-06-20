@@ -1,0 +1,23 @@
+[package]
+name = "dogma-vdb-rag"
+version = "0.1.0"
+description = "RAG pipeline for dogma-vdb — chunk, embed, index, search, and watch source files."
+edition = "2021"
+rust-version = "1.75"
+authors = ["dogma-vdb"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dogma-vdb = { path = ".." }
+dogma-vdb-embed = { path = "../dogma-vdb-embed" }
+dogma-vdb-embed-fastembed = { path = "../dogma-vdb-embed-fastembed" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+notify = { version = "8", features = ["crossbeam-channel"] }
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
+ctrlc = "3"
+
+[dev-dependencies]
+tempfile = "3"

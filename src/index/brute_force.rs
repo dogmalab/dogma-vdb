@@ -106,10 +106,10 @@ impl Index for BruteForceIndex {
     }
 
     fn insert(&mut self, docs: &[Document]) {
-        // Memory guard antes de grandes asignaciones
+        // Check available memory before large allocation
         if !docs.is_empty() {
             if let Err(e) = crate::memory::ensure_memory() {
-                eprintln!("❌ MemoryGuard detuvo BruteForceIndex::insert: {e}");
+                log::error!("MemoryGuard blocked BruteForceIndex::insert: {e}");
                 return;
             }
         }
@@ -212,9 +212,8 @@ impl Index for BruteForceIndex {
         };
 
         // Sort by score descending
-        candidates.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        candidates
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if self.sq_rescore {
             let rescore_k = (k * 2).min(candidates.len());

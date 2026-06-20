@@ -81,10 +81,7 @@ impl ParagraphChunker {
                     .rfind(|&i| text.is_char_boundary(i))
                     .unwrap_or(start)
             };
-            let consumed = text[start..consumed_end]
-                .lines()
-                .count()
-                .max(1);
+            let consumed = text[start..consumed_end].lines().count().max(1);
             cur_line += consumed;
 
             // Advance `start` — NEVER let it regress or stall (infinite-loop fix).
@@ -131,7 +128,7 @@ impl ParagraphChunker {
         }
 
         // Embed sentences in batches
-        let refs: Vec<&str> = sentences.iter().copied().collect();
+        let refs: Vec<&str> = sentences.to_vec();
         let embeddings = match embedder.embed_batch(&refs) {
             Ok(e) => e,
             Err(_) => return self.chunk(text, max_size),
@@ -153,8 +150,11 @@ impl ParagraphChunker {
                 .sum();
             let mag_a: f32 = embeddings[i].iter().map(|x| x * x).sum::<f32>().sqrt();
             let mag_b: f32 = embeddings[i + 1].iter().map(|x| x * x).sum::<f32>().sqrt();
-            let cos =
-                if mag_a > 0.0 && mag_b > 0.0 { dot / (mag_a * mag_b) } else { 1.0 };
+            let cos = if mag_a > 0.0 && mag_b > 0.0 {
+                dot / (mag_a * mag_b)
+            } else {
+                1.0
+            };
 
             // Approximate byte length of the current sentence
             acc_len += sentences[i].len() + 1; // +1 for separator

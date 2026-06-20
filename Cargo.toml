@@ -81,5 +81,6 @@ members = [
     "dogma-vdb-embed",
     "dogma-vdb-embed-fastembed",
     "dogma-vdb-rerank",
+    "dogma-vdb-rag",
     "benchmarks",
 ]

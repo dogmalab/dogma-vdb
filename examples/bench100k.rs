@@ -1,4 +1,4 @@
-//! Benchmark solo 100K vectores + tree-sitter chunking.
+//! Benchmark: 100K vectors + tree-sitter chunking.
 //! Correr: cargo run --release --example bench100k --features chunker-syntax
 
 use dogma_vdb::distance::Metric;

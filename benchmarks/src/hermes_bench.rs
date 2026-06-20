@@ -5,10 +5,12 @@
 //!
 //! Run:
 //!   cargo run --release --bin hermes-bench
+//!   cargo run --release --bin hermes-bench -- --seed 42 --output json
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
 use dogma_vdb::index::{BruteForceIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument};
+use serde::Serialize;
 use std::path::Path;
 use std::time::Instant;
 
@@ -21,6 +23,44 @@ const DIM: usize = 384;
 const N_PROBE: usize = 64;
 const N_LIST: usize = 256;
 const M_SUB: usize = 32; // 384/32 = 12 dims/sub-vector (≤16 ✓)
+
+const DEFAULT_SEED: u64 = 42;
+
+// ============================================================================
+// Argument parsing
+// ============================================================================
+
+struct Args {
+    seed: u64,
+    output_json: bool,
+}
+
+fn parse_args() -> Args {
+    let args: Vec<String> = std::env::args().collect();
+    let mut seed = DEFAULT_SEED;
+    let mut output_json = false;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seed" => {
+                i += 1;
+                seed = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .expect("--seed requires a u64 value");
+            }
+            "--output" => {
+                i += 1;
+                if args.get(i).is_some_and(|v| v == "json") {
+                    output_json = true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Args { seed, output_json }
+}
 
 /// Make a content‑derived embedding from source text.
 /// Uses **word n‑gram feature hashing** so that similar content
@@ -100,8 +140,7 @@ fn collect_recursive(
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default();
-                if name != "target" && name != ".git" && name != "node_modules" && name != ".venv"
-                {
+                if name != "target" && name != ".git" && name != "node_modules" && name != ".venv" {
                     collect_recursive(base, &path, extensions, dim, docs);
                 }
             } else if path.is_file() {
@@ -109,17 +148,13 @@ fn collect_recursive(
                     if extensions.contains(&ext) {
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             if !content.is_empty() && content.len() <= 500_000 {
-                                let rel = path
-                                    .strip_prefix(base)
-                                    .unwrap_or(&path)
-                                    .to_string_lossy();
+                                let rel =
+                                    path.strip_prefix(base).unwrap_or(&path).to_string_lossy();
                                 let id = rel.replace('/', "--").replace('.', "-");
                                 let emb = embed_from_text(&content, dim);
                                 if emb.iter().any(|&x| x != 0.0) {
                                     docs.push(
-                                        Document::builder(id, content)
-                                            .embedding(emb)
-                                            .build(),
+                                        Document::builder(id, content).embedding(emb).build(),
                                     );
                                 }
                             }
@@ -148,8 +183,40 @@ fn recall_at_k(actual: &[ScoredDocument], expected: &[ScoredDocument], k: usize)
     hits as f64 / k.min(expected_ids.len()) as f64
 }
 
+fn seeded_shuffle<T>(data: &mut [T], seed: u64) {
+    // Fisher-Yates shuffle with SplitMix64 RNG
+    let mut next = seed;
+    let mut i = data.len();
+    while i > 1 {
+        i -= 1;
+        next = next.wrapping_mul(0x9E3779B97F4A7C15);
+        let j = (next as usize) % (i + 1);
+        data.swap(i, j);
+    }
+}
+
+#[derive(Serialize)]
+struct BenchOutput {
+    seed: u64,
+    backend: String,
+    config: serde_json::Value,
+    num_queries: usize,
+    dimension: usize,
+    recall_at_1_pct: f64,
+    recall_at_10_pct: f64,
+    latency_mean_us: f64,
+    latency_p50_us: f64,
+    latency_p95_us: f64,
+    latency_p99_us: f64,
+    qps: f64,
+    index_docs: usize,
+    build_time_s: f64,
+}
+
 fn main() {
-    println!("=== IVF-PQ Recall Validation with Real Data (hermes-agent) ===\n");
+    let args = parse_args();
+    println!("=== IVF-PQ Recall Validation with Real Data (hermes-agent) ===");
+    println!("  Seed: {}\n", args.seed);
 
     // ---- Load data ----
     let hermes_path = Path::new("/home/arggil/Documents/DEV-WORKSPACE/hermes-agent");
@@ -160,7 +227,7 @@ fn main() {
 
     println!("Loading documents from: {:?}", hermes_path);
     let start = Instant::now();
-    let docs = collect_documents(hermes_path, DIM);
+    let mut docs = collect_documents(hermes_path, DIM);
     let load_time = start.elapsed();
 
     println!(
@@ -182,7 +249,8 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Split: 80% index, 20% queries
+    // ---- Shuffle with seed, then split 80/20 ----
+    seeded_shuffle(&mut docs, args.seed);
     let split = (docs.len() as f64 * 0.8) as usize;
     let index_docs = &docs[..split];
     let query_texts: Vec<&str> = docs[split..].iter().map(|d| d.text.as_str()).collect();
@@ -228,13 +296,12 @@ fn main() {
         m_subspaces: M_SUB,
         metric: Metric::Cosine,
         rerank_enabled: false,
+        ..IvfPqConfig::default()
     });
     let t0 = Instant::now();
     ivf.insert(index_docs);
-    println!(
-        "  IVF-PQ built in {:.2}s\n",
-        t0.elapsed().as_secs_f64()
-    );
+    let build_time = t0.elapsed();
+    println!("  IVF-PQ built in {:.2}s\n", build_time.as_secs_f64());
 
     // ---- Query IVF-PQ ----
     println!("Running {} IVF-PQ queries...", query_texts.len());
@@ -264,38 +331,73 @@ fn main() {
     let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
     let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
 
+    let recall1_pct = total_recall_1 / nq * 100.0;
+    let recall10_pct = total_recall_10 / nq * 100.0;
+    let qps = 1_000_000.0 / mean_lat;
+
     println!("\n============================================================");
     println!("  RESULTS — IVF-PQ with K-Means++ on hermes-agent data");
     println!("============================================================");
-    println!("  {:25} {:>8} / {:.0} queries", "Recall@1:", total_recall_1 / nq * 100.0, nq);
-    println!("  {:25} {:>8}", "", format!("{:.1}%", total_recall_1 / nq * 100.0));
-    println!("  {:25} {:>8} / {:.0} queries", "Recall@10:", total_recall_10 / nq * 100.0, nq);
-    println!("  {:25} {:>8}", "", format!("{:.1}%", total_recall_10 / nq * 100.0));
+    println!(
+        "  {:25} {:>8.1}% / {:.0} queries",
+        "Recall@1:", recall1_pct, nq
+    );
+    println!(
+        "  {:25} {:>8.1}% / {:.0} queries",
+        "Recall@10:", recall10_pct, nq
+    );
     println!("  ───────────────────────────────────────────");
     println!("  {:25} {:>8.1} μs", "Latency mean:", mean_lat);
     println!("  {:25} {:>8.1} μs", "Latency p50:", p50);
     println!("  {:25} {:>8.1} μs", "Latency p95:", p95);
     println!("  {:25} {:>8.1} μs", "Latency p99:", p99);
+    println!("  {:25} {:>8.0}", "QPS:", qps);
     println!("============================================================\n");
 
-    // ---- Comparison: old random K-Means (simulated by reducing quality) ----
-    // We can't run the old code anymore, but we can report the improvement
-    // by noting the test_recall_against_bf was passing at just 2/5 (40%).
-    // The new code should do significantly better.
+    // ---- JSON output ----
+    if args.output_json {
+        let output = BenchOutput {
+            seed: args.seed,
+            backend: "IVF-PQ".to_string(),
+            config: serde_json::json!({
+                "n_list": N_LIST,
+                "n_probe": N_PROBE,
+                "m_subspaces": M_SUB,
+                "metric": "Cosine",
+            }),
+            num_queries: query_texts.len(),
+            dimension: DIM,
+            recall_at_1_pct: recall1_pct,
+            recall_at_10_pct: recall10_pct,
+            latency_mean_us: mean_lat,
+            latency_p50_us: p50,
+            latency_p95_us: p95,
+            latency_p99_us: p99,
+            qps,
+            index_docs: index_docs.len(),
+            build_time_s: build_time.as_secs_f64(),
+        };
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    }
 
+    // ---- Comparison ----
     println!("---");
     println!("Baseline comparison:");
     println!("  Old test_recall_against_bf threshold: 2/5 hits (40%)");
-    println!("  New real-data Recall@10: {:.1}%", total_recall_10 / nq * 100.0);
+    println!("  New real-data Recall@10: {:.1}%", recall10_pct);
     println!();
 
     // Check minimum success threshold: Recall@10 ≥ 70%
     let pass = (total_recall_10 / nq) >= 0.70;
     if pass {
-        println!("✅ SUCCESS: IVF-PQ Recall@10 >= 70% threshold ({:.1}%)",
-                 total_recall_10 / nq * 100.0);
+        println!(
+            "✅ SUCCESS: IVF-PQ Recall@10 >= 70% threshold ({:.1}%)",
+            recall10_pct
+        );
     } else {
-        println!("⚠️  IVF-PQ Recall@10 = {:.1}% (below 70% target). Try increasing n_probe or n_list.",
-                 total_recall_10 / nq * 100.0);
+        println!(
+            "⚠️  IVF-PQ Recall@10 = {:.1}% (below 70% target). Try increasing n_probe or n_list.",
+            recall10_pct
+        );
     }
 }

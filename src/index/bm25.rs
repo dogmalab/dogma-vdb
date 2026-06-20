@@ -15,6 +15,9 @@
 //! ```
 
 use std::collections::HashMap;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 /// BM25 constants (Okapi BM25 default).
 const K1: f32 = 1.2;
@@ -24,6 +27,7 @@ const B: f32 = 0.75;
 ///
 /// Stores term frequencies per document, document lengths, and the
 /// average document length for the IDF / length-normalisation terms.
+#[derive(Serialize, Deserialize)]
 pub struct Bm25Index {
     /// Inverted list: term → Vec<(doc_id, frequency_in_doc)>.
     inverted: HashMap<String, Vec<(usize, u32)>>,
@@ -119,6 +123,42 @@ impl Bm25Index {
         self.num_docs == 0
     }
 
+    /// Persist the BM25 index to a JSON file at `path`.
+    ///
+    /// The saved file can be loaded later with [`Bm25Index::load`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::Io`] if the file cannot be written,
+    /// or [`crate::error::Error::Internal`] if serialisation fails.
+    pub fn save(&self, path: &Path) -> crate::error::Result<()> {
+        let json = serde_json::to_string(self).map_err(|e| {
+            crate::error::Error::Internal(format!("Failed to serialise BM25 index: {e}"))
+        })?;
+        std::fs::write(path, &json).map_err(|e| crate::error::Error::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        Ok(())
+    }
+
+    /// Load a BM25 index from a JSON file previously saved with [`Bm25Index::save`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::Io`] if the file cannot be read,
+    /// or [`crate::error::Error::Internal`] if the JSON is malformed.
+    pub fn load(path: &Path) -> crate::error::Result<Self> {
+        let json = std::fs::read_to_string(path).map_err(|e| crate::error::Error::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        let idx: Self = serde_json::from_str(&json).map_err(|e| {
+            crate::error::Error::Internal(format!("Failed to deserialise BM25 index: {e}"))
+        })?;
+        Ok(idx)
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     /// Inverse document frequency: ln(1 + (N - df + 0.5) / (df + 0.5))
@@ -190,5 +230,38 @@ mod tests {
     fn test_tokenise() {
         let t = tokenise("Hello, World! Rust-is-safe.");
         assert_eq!(t, vec!["hello", "world", "rust", "is", "safe"]);
+    }
+
+    #[test]
+    fn test_bm25_save_load() {
+        let mut idx = Bm25Index::new();
+        idx.insert(0, "the cat sat on the mat");
+        idx.insert(1, "the dog chased the cat");
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("__test_bm25_save_load.bm25");
+
+        // Clean up any leftover from previous runs
+        let _ = std::fs::remove_file(&path);
+
+        idx.save(&path).expect("save should succeed");
+
+        let loaded = Bm25Index::load(&path).expect("load should succeed");
+        assert_eq!(idx.len(), loaded.len());
+
+        // Search results must be identical
+        let r1 = idx.search("cat", 10);
+        let r2 = loaded.search("cat", 10);
+        assert_eq!(r1, r2);
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_bm25_load_nonexistent() {
+        let path = std::env::temp_dir().join("__test_bm25_nonexistent.bm25");
+        let _ = std::fs::remove_file(&path);
+        assert!(Bm25Index::load(&path).is_err());
     }
 }

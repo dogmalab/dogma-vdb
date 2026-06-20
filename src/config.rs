@@ -348,10 +348,10 @@ pub enum PerformanceProfile {
     PrecisionLocal,
     /// IVF-PQ (auto-tuning) + BM25 + Reranker.
     /// Balanced throughput; good for production at scale.
-    ProduccionHibrido,
+    HybridProduction,
     /// IVF-PQ (low n_probe) only, no BM25, no Reranker.
     /// Raw speed for IoT or maximum-QPS scenarios.
-    VelocidadExtrema,
+    MaxSpeed,
 }
 
 /// Configuration for a single hybrid query.
@@ -368,7 +368,7 @@ impl QueryPipelineConfig {
     pub fn use_bm25(&self) -> bool {
         matches!(
             self.profile,
-            PerformanceProfile::PrecisionLocal | PerformanceProfile::ProduccionHibrido
+            PerformanceProfile::PrecisionLocal | PerformanceProfile::HybridProduction
         )
     }
 
@@ -376,7 +376,7 @@ impl QueryPipelineConfig {
     pub fn use_reranker(&self) -> bool {
         matches!(
             self.profile,
-            PerformanceProfile::PrecisionLocal | PerformanceProfile::ProduccionHibrido
+            PerformanceProfile::PrecisionLocal | PerformanceProfile::HybridProduction
         )
     }
 
@@ -385,13 +385,13 @@ impl QueryPipelineConfig {
     /// | Profile | Multiplier | Rationale |
     /// |---------|-----------|----------|
     /// | `PrecisionLocal` | 5 | More candidates → better recall after fusion/rerank |
-    /// | `ProduccionHibrido` | 3 | Balanced throughput |
-    /// | `VelocidadExtrema` | 2 | Minimal candidates → maximum QPS |
+    /// | `HybridProduction` | 3 | Balanced throughput |
+    /// | `MaxSpeed` | 2 | Minimal candidates → maximum QPS |
     pub fn candidate_multiplier(&self) -> usize {
         match self.profile {
             PerformanceProfile::PrecisionLocal => 5,
-            PerformanceProfile::ProduccionHibrido => 3,
-            PerformanceProfile::VelocidadExtrema => 2,
+            PerformanceProfile::HybridProduction => 3,
+            PerformanceProfile::MaxSpeed => 2,
         }
     }
 }

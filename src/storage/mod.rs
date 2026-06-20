@@ -33,6 +33,7 @@
 
 use crate::doc::Document;
 use crate::error::{Error, Result};
+use memmap2::Mmap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,64 @@ const CURRENT_VERSION: u32 = 2;
 
 /// Alignment boundary for the embedding section (32 bytes = 256-bit SIMD).
 const EMB_ALIGN: usize = 32;
+
+// ---------------------------------------------------------------------------
+// Helper: memory-map a file with random-access advice
+// ---------------------------------------------------------------------------
+
+/// Memory-map the entire file at `path` with random-access advice.
+///
+/// # Safety
+///
+/// `Mmap::map` is `unsafe` because the kernel can deliver `SIGBUS` if an
+/// external process truncates the mapped file.  The caller guarantees that
+/// the file is **not modified by any external agent** while the returned
+/// `Mmap` is alive.
+///
+/// This function exists solely to centralize the `unsafe` block and the
+/// `advise(Random)` call — **not** to override the caller's safety
+/// responsibility.
+pub(crate) fn mmap_path(path: &Path) -> Result<Mmap> {
+    let file = std::fs::File::open(path).map_err(|e| Error::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    mmap_file(&file)
+}
+
+/// Memory-map an already-open file with random-access advice.
+///
+/// Useful when the caller already has a `File` handle (e.g. for metadata
+/// queries before or after the mapping).
+///
+/// # Safety
+///
+/// Same as [`mmap_path`] — caller guarantees no external modification.
+pub(crate) fn mmap_file(file: &std::fs::File) -> Result<Mmap> {
+    // SAFETY: read-only mapping; caller guarantees no external modification.
+    let mmap = unsafe { Mmap::map(file) }.map_err(|e| Error::Internal(format!("mmap: {e}")))?;
+    let _ = mmap.advise(memmap2::Advice::Random);
+    Ok(mmap)
+}
+
+/// Memory-map a portion of `file` at `offset` for `len` bytes.
+///
+/// # Safety
+///
+/// Same as [`mmap_file`] — caller guarantees no external modification.
+/// Additionally, `offset` must be page-aligned (typically 4096).
+pub(crate) fn mmap_file_offset(file: &std::fs::File, offset: u64, len: usize) -> Result<Mmap> {
+    // SAFETY: caller guarantees page-aligned offset and no external modification.
+    let mmap = unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map(file)
+    }
+    .map_err(|e| Error::Internal(format!("mmap offset: {e}")))?;
+    let _ = mmap.advise(memmap2::Advice::Random);
+    Ok(mmap)
+}
 
 /// Binary (native) storage for a collection of [`Document`]s.
 #[derive(Debug, Clone)]

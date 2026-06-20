@@ -3,6 +3,11 @@
 //! Exposes tools for querying, ingesting, listing, and deleting
 //! documents in .vdb collections.  Compatible with any MCP client
 //! (Claude Desktop, Cursor, opencode, etc.).
+//!
+//! ## Transports
+//!
+//! * `stdio` (default) — JSON-RPC over stdin/stdout.
+//! * `sse`    — Streamable HTTP / SSE transport (requires `sse` feature).
 
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
@@ -18,6 +23,51 @@ use tracing_subscriber::EnvFilter;
 mod rerank_adapter;
 
 use dogma_vdb::rerank::Reranker;
+
+// ---------------------------------------------------------------------------
+// CLI argument parsing (minimal, no clap dependency)
+// ---------------------------------------------------------------------------
+
+struct CliArgs {
+    transport: String,
+    #[cfg(feature = "sse")]
+    port: u16,
+}
+
+fn parse_args() -> CliArgs {
+    let args: Vec<String> = std::env::args().collect();
+    let mut transport = String::from("stdio");
+    #[cfg(feature = "sse")]
+    let mut port = 8080u16;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--transport" => {
+                i += 1;
+                if i < args.len() {
+                    transport = args[i].clone();
+                }
+            }
+            #[cfg(feature = "sse")]
+            "--port" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(p) = args[i].parse::<u16>() {
+                        port = p;
+                    }
+                }
+            }
+            _ => {} // ignore unknown flags
+        }
+        i += 1;
+    }
+    CliArgs {
+        transport,
+        #[cfg(feature = "sse")]
+        port,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Global reranker (lazily initialised once)
@@ -350,6 +400,58 @@ impl VdbServer {
 }
 
 // ---------------------------------------------------------------------------
+// SSE / Streamable HTTP transport (behind `sse` feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "sse")]
+async fn run_sse_server(server: VdbServer, port: u16) -> anyhow::Result<()> {
+    use axum::{
+        body::Body,
+        extract::{Request, State},
+        response::Response,
+        routing::any,
+        BoxError, Router,
+    };
+    use http_body_util::BodyExt;
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+    use std::convert::Infallible;
+
+    let config = StreamableHttpServerConfig::default().disable_allowed_hosts();
+    let session_manager = std::sync::Arc::new(LocalSessionManager::default());
+
+    let svc = StreamableHttpService::new(move || Ok(server.clone()), session_manager, config);
+
+    async fn sse_handler(
+        State(svc): State<StreamableHttpService<VdbServer, LocalSessionManager>>,
+        req: Request,
+    ) -> Response {
+        let resp = svc.handle(req).await;
+        let (parts, body) = resp.into_parts();
+        // Convert BoxBody<Bytes, Infallible> -> Body (axum)
+        // Since Infallible can never happen, we coerce it to BoxError.
+        let body = Body::new(body.map_err(|e: Infallible| -> BoxError { match e {} }));
+        Response::from_parts(parts, body)
+    }
+
+    let app = Router::new()
+        .route("/{*path}", any(sse_handler))
+        .with_state(svc);
+
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    tracing::info!("Starting dogma-vdb MCP server (SSE transport) on http://{addr}");
+    tracing::info!("Tools: vecdb_query, vecdb_ingest, vecdb_delete, vecdb_list, vecdb_info");
+    tracing::info!("MCP Streamable HTTP endpoint — POST /  (application/json)");
+    tracing::info!("SSE endpoint — GET / (Accept: text/event-stream)");
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -392,14 +494,34 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Reranker disabled (set DOGMA_RERANK=1 to enable)");
     }
 
+    let args = parse_args();
     let server = VdbServer;
 
-    tracing::info!("Starting dogma-vdb MCP server (stdio transport)");
-    tracing::info!("Tools: vecdb_query, vecdb_ingest, vecdb_delete, vecdb_list, vecdb_info");
+    match args.transport.as_str() {
+        "sse" => {
+            #[cfg(feature = "sse")]
+            {
+                run_sse_server(server, args.port).await?;
+            }
+            #[cfg(not(feature = "sse"))]
+            {
+                anyhow::bail!(
+                    "SSE transport requires the 'sse' feature. \
+                     Rebuild with `cargo build --features sse`"
+                );
+            }
+        }
+        _ => {
+            tracing::info!("Starting dogma-vdb MCP server (stdio transport)");
+            tracing::info!(
+                "Tools: vecdb_query, vecdb_ingest, vecdb_delete, vecdb_list, vecdb_info"
+            );
 
-    serve_server(server, (stdin(), stdout()).into_transport())
-        .await
-        .map_err(|e| anyhow::anyhow!("MCP server exited: {e}"))?;
+            serve_server(server, (stdin(), stdout()).into_transport())
+                .await
+                .map_err(|e| anyhow::anyhow!("MCP server exited: {e}"))?;
+        }
+    }
 
     Ok(())
 }

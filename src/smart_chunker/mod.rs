@@ -59,11 +59,9 @@ impl ChunkStrategy {
     /// Detect strategy from an extension string (without leading dot).
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "go" => {
-                ChunkStrategy::Code
-            }
-            "txt" | "text" | "md" | "markdown" | "jsonl" | "vdb" | "ndjson" | "json"
-            | "yaml" | "toml" | "sh" => ChunkStrategy::FixedWindow,
+            "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "go" => ChunkStrategy::Code,
+            "txt" | "text" | "md" | "markdown" | "jsonl" | "vdb" | "ndjson" | "json" | "yaml"
+            | "toml" | "sh" => ChunkStrategy::FixedWindow,
             _ => ChunkStrategy::FixedWindow,
         }
     }
@@ -241,8 +239,7 @@ impl SmartChunker {
                 // We default to Rust-like if we can't determine.
                 let lines: Vec<&str> = text.lines().collect();
                 let first = lines.first().copied().unwrap_or("");
-                if first.contains("def ") || first.contains("class ") || text.contains("def ")
-                {
+                if first.contains("def ") || first.contains("class ") || text.contains("def ") {
                     self.python.chunk(text, max)
                 } else if first.contains("function")
                     || first.contains("=>")
@@ -309,7 +306,7 @@ impl SmartChunker {
             .par_chunks(batch_size)
             .flat_map(|chunk| {
                 if let Err(e) = crate::memory::ensure_memory() {
-                    eprintln!("⚠️  MemoryGuard: chunk_batch omitted — {e}");
+                    log::warn!("MemoryGuard: chunk_batch skipped — {e}");
                     return Vec::new();
                 }
                 let mut batch_docs = Vec::with_capacity(chunk.len() * 4);
@@ -499,9 +496,18 @@ mod tests {
         assert_eq!(ChunkStrategy::from_extension("js"), ChunkStrategy::Code);
         assert_eq!(ChunkStrategy::from_extension("ts"), ChunkStrategy::Code);
         assert_eq!(ChunkStrategy::from_extension("go"), ChunkStrategy::Code);
-        assert_eq!(ChunkStrategy::from_extension("md"), ChunkStrategy::FixedWindow);
-        assert_eq!(ChunkStrategy::from_extension("txt"), ChunkStrategy::FixedWindow);
-        assert_eq!(ChunkStrategy::from_extension("jsonl"), ChunkStrategy::FixedWindow);
+        assert_eq!(
+            ChunkStrategy::from_extension("md"),
+            ChunkStrategy::FixedWindow
+        );
+        assert_eq!(
+            ChunkStrategy::from_extension("txt"),
+            ChunkStrategy::FixedWindow
+        );
+        assert_eq!(
+            ChunkStrategy::from_extension("jsonl"),
+            ChunkStrategy::FixedWindow
+        );
         assert_eq!(
             ChunkStrategy::from_extension("unknown"),
             ChunkStrategy::FixedWindow
@@ -510,10 +516,7 @@ mod tests {
 
     #[test]
     fn test_chunk_strategy_from_path() {
-        assert_eq!(
-            ChunkStrategy::from_path("src/main.rs"),
-            ChunkStrategy::Code
-        );
+        assert_eq!(ChunkStrategy::from_path("src/main.rs"), ChunkStrategy::Code);
         assert_eq!(
             ChunkStrategy::from_path("/path/to/file.py"),
             ChunkStrategy::Code

@@ -11,6 +11,7 @@ mod brute_force;
 mod hnsw;
 mod ivf_pq;
 pub(crate) mod ivf_pq_persistence;
+mod kmeans;
 mod sq;
 
 pub mod bm25;

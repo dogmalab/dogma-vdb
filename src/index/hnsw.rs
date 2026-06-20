@@ -260,10 +260,10 @@ impl HnswIndex {
     /// documents (existing + new), and all embeddings are re‑quantised
     /// after insertion — identical strategy to [`BruteForceIndex`].
     pub fn insert(&mut self, docs: &[Document]) {
-        // Memory guard antes de grandes asignaciones
+        // Memory guard before large allocations
         if !docs.is_empty() {
             if let Err(e) = crate::memory::ensure_memory() {
-                eprintln!("❌ MemoryGuard detuvo HnswIndex::insert: {e}");
+                log::error!("MemoryGuard blocked HnswIndex::insert: {e}");
                 return;
             }
         }
@@ -349,7 +349,8 @@ impl HnswIndex {
         if self.config.sq_rescore {
             let rescore_k = (k * 2).min(candidates.len());
             for c in &mut candidates[..rescore_k] {
-                c.score = distance::score(&self.documents[c.node].embedding, query, self.config.metric);
+                c.score =
+                    distance::score(&self.documents[c.node].embedding, query, self.config.metric);
             }
             candidates[..rescore_k]
                 .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));

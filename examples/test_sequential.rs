@@ -1,41 +1,37 @@
-// Test secuencial: ingerir hermes-agent, probar cada índice UNO POR UNO
-// con liberación de memoria entre cada uno y telemetría de RSS.
+// Sequential test: ingest hermes-agent, test each index ONE BY ONE
+// with memory release between each and RSS telemetry.
 //!
-//! Uso: cargo run --release --example test_sequential
-//!      RUST_LOG=info cargo run --release --example test_sequential
-//!   (con --features chunker-syntax para chunking con tree-sitter)
+//! Usage: cargo run --release --example test_sequential
+//!        RUST_LOG=info cargo run --release --example test_sequential
+//!   (with --features chunker-syntax for tree-sitter chunking)
 //!
-//! Nota: jemalloc desactivado para diagnóstico — ver issue del chunker
+//! Note: jemalloc disabled for diagnostics — see chunker issue
 
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
-use dogma_vdb::index::{
-    BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex,
-};
+use dogma_vdb::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex};
 use dogma_vdb::memory;
 use dogma_vdb::smart_chunker::SmartChunker;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
 use std::panic;
+use std::path::Path;
 use std::time::Instant;
 
-// ── Config ──────────────────────────────────────────────────────────────
+// ── Config ──
 const DIM: usize = 64;
 const TOP_K: usize = 10;
 const QUERIES: usize = 20;
 const SAMPLE_FILES: usize = 200;
 
-// ── Telemetría: RSS ─────────────────────────────────────────────────────
+// ── RSS telemetry ──
 fn rss_kb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| {
             s.lines().find_map(|l| {
                 if l.starts_with("VmRSS:") {
-                    l.split_whitespace()
-                        .nth(1)
-                        .and_then(|v| v.parse().ok())
+                    l.split_whitespace().nth(1).and_then(|v| v.parse().ok())
                 } else {
                     None
                 }
@@ -53,14 +49,14 @@ fn rss_delta(before: u64, label: &str) {
     let after = rss_kb();
     let delta = after as i64 - before as i64;
     eprintln!(
-        "  📊 RSS tras {label}: {:.1} MB (Δ{}{:.1} MB)",
+        "  📊 RSS after {label}: {:.1} MB (Δ{}{:.1} MB)",
         after as f64 / 1024.0,
         if delta >= 0 { "+" } else { "" },
         delta as f64 / 1024.0
     );
 }
 
-// ── Embedder hash-based (sin dependencias externas) ─────────────────────
+// ── Hash-based embedder (no external dependencies) ──
 fn embed_text(text: &str) -> Vec<f32> {
     use std::hash::{Hash, Hasher};
     (0..DIM)
@@ -73,7 +69,7 @@ fn embed_text(text: &str) -> Vec<f32> {
         .collect()
 }
 
-// ── Colector de archivos ───────────────────────────────────────────────
+// ── File collector ──
 fn collect_files(root: &Path, max: usize) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
@@ -106,7 +102,7 @@ fn collect_files(root: &Path, max: usize) -> Vec<std::path::PathBuf> {
     files
 }
 
-// ── Benchmark de un índice ─────────────────────────────────────────────
+// ── Single index benchmark ──
 fn bench_index(
     label: &str,
     docs: &[Document],
@@ -116,7 +112,6 @@ fn bench_index(
     eprintln!("\n── {label} ──");
     let rss_before = rss_kb();
 
-    // Build
     let t0 = Instant::now();
     let mut index = build_index();
     index.insert(docs);
@@ -153,13 +148,12 @@ fn bench_index(
         QUERIES as f64 / total_s
     );
 
-    // Liberar
     drop(index);
     rss_delta(rss_before, &format!("drop {label}"));
-    eprintln!("  → Memoria liberada correctamente");
+    eprintln!("  → Memory freed successfully");
 }
 
-// ── Main ───────────────────────────────────────────────────────────────
+// ── Main ──
 fn main() {
     let hermes_path = std::env::var("HERMES_AGENT_PATH").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/arggil".into());
@@ -167,22 +161,22 @@ fn main() {
     });
 
     eprintln!("═══════════════════════════════════════════════════");
-    eprintln!("  dogma-vdb Test Secuencial — hermes-agent");
+    eprintln!("  dogma-vdb Sequential Test — hermes-agent");
     eprintln!("═══════════════════════════════════════════════════");
-    print_mem("inicio");
+    print_mem("start");
 
-    // ── 1. Colectar archivos ──────────────────────────────────────────
-    eprintln!("\n── [1/4] Colectando archivos ──");
+    // ── 1. Collect files ──
+    eprintln!("\n── [1/4] Collecting files ──");
     let files = collect_files(Path::new(&hermes_path), SAMPLE_FILES);
-    eprintln!("  {} archivos sampleados de {}", files.len(), hermes_path);
-    print_mem("tras colectar");
+    eprintln!("  {} files sampled from {}", files.len(), hermes_path);
+    print_mem("after collect");
 
-    // ── 2. Chunking ────────────────────────────────────────────────────
+    // ── 2. Chunking ──
     eprintln!("\n── [2/4] Chunking ──");
     let chunker = SmartChunker::default();
     let binary_exts: &[&str] = &[
-        "png", "jpg", "jpeg", "gif", "ico", "woff2", "woff", "ttf", "otf",
-        "eot", "pdf", "zip", "gz", "pyc", "mp3", "mp4", "webm",
+        "png", "jpg", "jpeg", "gif", "ico", "woff2", "woff", "ttf", "otf", "eot", "pdf", "zip",
+        "gz", "pyc", "mp3", "mp4", "webm",
     ];
 
     let t0 = Instant::now();
@@ -190,22 +184,31 @@ fn main() {
     let mut file_count = 0u64;
     let mut skipped = 0u64;
     for path in &files {
-        // MemoryGuard periódico cada 10 archivos
+        // Periodic memory guard every 10 files
         file_count += 1;
 
-        // LOG POR ARCHIVO (flush forzado para ver el último antes del crash)
-        eprintln!("  📄 [{file_count}/{}] {:?}", files.len(),
-            path.strip_prefix(&hermes_path).unwrap_or(path));
+        eprintln!(
+            "  📄 [{file_count}/{}] {:?}",
+            files.len(),
+            path.strip_prefix(&hermes_path).unwrap_or(path)
+        );
         std::io::stderr().flush().ok();
 
         if file_count % 10 == 0 {
-            eprintln!("  📊 {}/{} archivos, {} chunks, RSS: {:.1} MB",
-                file_count, files.len(), all_docs.len(),
-                rss_kb() as f64 / 1024.0);
+            eprintln!(
+                "  📊 {}/{} files, {} chunks, RSS: {:.1} MB",
+                file_count,
+                files.len(),
+                all_docs.len(),
+                rss_kb() as f64 / 1024.0
+            );
             std::io::stderr().flush().ok();
             if let Err(e) = memory::ensure_memory() {
-                eprintln!("  ❌ MemoryGuard detuvo chunking en archivo {}/{}: {e}",
-                    file_count, files.len());
+                eprintln!(
+                    "  ❌ Memory guard stopped chunking at file {}/{}: {e}",
+                    file_count,
+                    files.len()
+                );
                 std::io::stderr().flush().ok();
                 break;
             }
@@ -228,15 +231,15 @@ fn main() {
         }
         let rel = path.strip_prefix(&hermes_path).unwrap_or(path);
         let base_id = rel.to_string_lossy().replace(['/', '\\', '.'], "-");
-        
-        // Wrapped en catch_unwind para capturar panics
+
+        // Wrapped in catch_unwind to capture panics
         let docs_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
             chunker.chunk_to_docs(path, &content, &base_id, HashMap::new())
         }));
         let docs = match docs_result {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("  ❌ PANIC en chunk_to_docs para {:?}: {:?}", rel, e);
+                eprintln!("  ❌ PANIC in chunk_to_docs for {:?}: {:?}", rel, e);
                 std::io::stderr().flush().ok();
                 Vec::new()
             }
@@ -245,18 +248,18 @@ fn main() {
     }
     let ingest_t = t0.elapsed();
     eprintln!(
-        "  {} archivos procesados, {} chunks, {} saltados, {:.2}s",
+        "  {} files processed, {} chunks, {} skipped, {:.2}s",
         files.len(),
         all_docs.len(),
         skipped,
         ingest_t.as_secs_f64()
     );
-    print_mem("tras chunking");
+    print_mem("after chunking");
 
-    // ── 3. Embedding ───────────────────────────────────────────────────
+    // ── 3. Embedding ──
     eprintln!("\n── [3/4] Embedding ({DIM}-dim hash) ──");
     if let Err(e) = memory::ensure_memory() {
-        eprintln!("  ❌ Memory guard detuvo embedding: {e}");
+        eprintln!("  ❌ Memory guard stopped embedding: {e}");
         return;
     }
     let t0 = Instant::now();
@@ -265,19 +268,18 @@ fn main() {
     }
     let embed_t = t0.elapsed();
     eprintln!(
-        "  {} docs embebidos en {:.2}s",
+        "  {} docs embedded in {:.2}s",
         all_docs.len(),
         embed_t.as_secs_f64()
     );
-    print_mem("tras embedding");
+    print_mem("after embedding");
 
-    // ── 4. Queries de prueba ───────────────────────────────────────────
+    // ── 4. Test queries ──
     let queries: Vec<Vec<f32>> = (0..QUERIES)
         .map(|_| {
             (0..DIM)
                 .map(|i| {
-                    let v = ((i as u64 * 6364136223846793005)
-                        .wrapping_mul(QUERIES as u64 + 1)
+                    let v = ((i as u64 * 6364136223846793005).wrapping_mul(QUERIES as u64 + 1)
                         >> 33) as f64
                         / 1e9;
                     v as f32
@@ -286,8 +288,8 @@ fn main() {
         })
         .collect();
 
-    // ── 5. Índices UNO POR UNO ─────────────────────────────────────────
-    eprintln!("\n── [4/4] Benchmarks secuenciales ──");
+    // ── 5. Indices ONE BY ONE ──
+    eprintln!("\n── [4/4] Sequential benchmarks ──");
 
     // 5a. BruteForce
     bench_index("BruteForce", &all_docs, &queries, || {
@@ -315,7 +317,7 @@ fn main() {
     });
     print_mem("post-HNSW");
 
-    // 5d. HNSW (ef=200, alta precisión)
+    // 5d. HNSW (ef=200, high precision)
     bench_index("HNSW M=16 ef=200", &all_docs, &queries, || {
         Box::new(HnswIndex::new(HnswConfig {
             m: 16,
@@ -356,12 +358,12 @@ fn main() {
     });
     print_mem("post-IVF-PQ");
 
-    // Liberar todo
+    // Free everything
     drop(all_docs);
     drop(queries);
-    print_mem("final (todo liberado)");
+    print_mem("final (all freed)");
 
     eprintln!("\n═══════════════════════════════════════════════════");
-    eprintln!("  ✅ Test completado sin crashes");
+    eprintln!("  ✅ Test completed without crashes");
     eprintln!("═══════════════════════════════════════════════════");
 }

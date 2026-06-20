@@ -23,6 +23,7 @@
 use crate::distance::{self, Metric};
 use crate::doc::Document;
 use crate::error::{Error, Result};
+use crate::index::kmeans::kmeans;
 use crate::index::{Index, ScoredDocument};
 use crate::storage::traits::VectorStorage;
 use rayon::prelude::*;
@@ -41,6 +42,14 @@ use std::sync::Arc;
 /// `m_subspaces` **must** be a multiple of 8 so that PQ lookup tables
 /// are 32‑byte aligned, enabling AVX2 / NEON to load sub‑vectors in a
 /// single instruction.  Use [`Self::validate`] at construction time.
+///
+/// # Incremental inserts
+///
+/// When `rebuild_threshold > 0.0`, small batch inserts use an incremental
+/// append path (frozen centroids + codebooks) and only trigger a full
+/// K‑Means + PQ rebuild when the ratio of stale (incrementally-added)
+/// docs exceeds the threshold.  Large batches (≥ `batch_rebuild_size`)
+/// always rebuild immediately.
 #[derive(Debug, Clone)]
 pub struct IvfPqConfig {
     /// Number of IVF clusters (K‑Means centroids).  Default: 100.
@@ -56,6 +65,15 @@ pub struct IvfPqConfig {
     /// raw speed — the lost recall is recovered by a subsequent
     /// Cross‑Encoder reranking pass (stage 2).
     pub rerank_enabled: bool,
+    /// Maximum ratio of stale (incrementally-added) docs vs total before
+    /// a full K‑Means + PQ rebuild is triggered.  Default: 0.20 (20%).
+    ///
+    /// - `0.0` = always rebuild (batch-only mode, same as original behaviour).
+    /// - `f64::MAX` = never auto-rebuild (purely incremental, recall degrades).
+    pub rebuild_threshold: f64,
+    /// Minimum batch size that triggers an immediate full rebuild instead
+    /// of incremental append.  Default: 1000.
+    pub batch_rebuild_size: usize,
 }
 
 impl Default for IvfPqConfig {
@@ -66,6 +84,8 @@ impl Default for IvfPqConfig {
             m_subspaces: 32,
             metric: Metric::Cosine,
             rerank_enabled: false,
+            rebuild_threshold: 0.20,
+            batch_rebuild_size: 1000,
         }
     }
 }
@@ -76,6 +96,8 @@ impl IvfPqConfig {
     /// Returns `Err` if:
     /// - `m_subspaces` is zero, or
     /// - `m_subspaces` is not a multiple of 8 (SIMD alignment).
+    /// - `rebuild_threshold` is negative.
+    /// - `batch_rebuild_size` is zero.
     pub fn validate(&self) -> Result<()> {
         if self.m_subspaces == 0 {
             return Err(Error::InvalidConfig("m_subspaces must be > 0".into()));
@@ -85,6 +107,17 @@ impl IvfPqConfig {
                 "m_subspaces must be a multiple of 8 for SIMD alignment, got {}",
                 self.m_subspaces
             )));
+        }
+        if self.rebuild_threshold < 0.0 {
+            return Err(Error::InvalidConfig(format!(
+                "rebuild_threshold must be >= 0.0, got {}",
+                self.rebuild_threshold
+            )));
+        }
+        if self.batch_rebuild_size == 0 {
+            return Err(Error::InvalidConfig(
+                "batch_rebuild_size must be > 0".into(),
+            ));
         }
         Ok(())
     }
@@ -104,153 +137,6 @@ impl IvfPqConfig {
 }
 
 // ---------------------------------------------------------------------------
-// K‑Means helper
-// ---------------------------------------------------------------------------
-
-/// Simple K‑Means clustering with **K‑Means++ initialisation**.
-///
-/// Returns `k` centroids (each `D`-dimensional).  Initialisation uses the
-/// standard K‑Means++ D² weighting (Arthur & Vassilvitskii 2007):
-///
-/// 1. Pick the first centroid uniformly at random.
-/// 2. For each remaining centroid, select a data point `x` with
-///    probability ∝ D(x)² where D(x) is the **Euclidean distance**
-///    to the nearest already‑chosen centroid.
-///
-/// Runs up to `max_iter` iterations, early‑stopping when no assignment
-/// changes.  The iterative refinement uses the configured `metric`.
-fn kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, metric: Metric) -> Vec<Vec<f32>> {
-    if data.is_empty() || k == 0 {
-        return Vec::new();
-    }
-    let dim = data[0].len();
-    let n = data.len();
-
-    // ------------------------------------------------------------------
-    // 1. K‑Means++ initialisation
-    // ------------------------------------------------------------------
-    let mut rng = 42u64;
-    let mut centroids: Vec<Vec<f32>> = Vec::with_capacity(k);
-    let k_eff = k.min(n);
-
-    // Helper: splitmix64 next → u64 in [0, limit)
-    fn next_splitmix(seed: &mut u64) -> u64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        *seed >> 33
-    }
-
-    // Pick first centroid uniformly at random
-    let idx0 = (next_splitmix(&mut rng) as usize) % n;
-    centroids.push(data[idx0].clone());
-
-    // D²(x): squared Euclidean distance from x to its nearest centroid
-    let mut min_d2 = vec![f64::MAX; n];
-    // Initialise: distance from every point to the first centroid
-    for (i, v) in data.iter().enumerate() {
-        let d2 = squared_euclidean(v, &data[idx0]);
-        min_d2[i] = d2;
-    }
-
-    // Pick remaining k-1 centroids via D² weighting
-    for _ in 1..k_eff {
-        // Compute total weight W = Σ D(x)²
-        let total_w: f64 = min_d2.iter().sum();
-        if total_w <= 0.0 {
-            break; // all remaining points identical to a centroid
-        }
-
-        // Weighted random pick
-        let threshold = next_splitmix(&mut rng) as f64 / (u64::MAX as f64) * total_w;
-        let mut cumulative = 0.0f64;
-        let mut pick = 0;
-        for (i, &d2) in min_d2.iter().enumerate() {
-            cumulative += d2;
-            if cumulative >= threshold {
-                pick = i;
-                break;
-            }
-        }
-
-        centroids.push(data[pick].clone());
-
-        // Update min_d2 for the new centroid
-        for (i, v) in data.iter().enumerate() {
-            let d2 = squared_euclidean(v, &data[pick]);
-            if d2 < min_d2[i] {
-                min_d2[i] = d2;
-            }
-        }
-    }
-
-    // Pad with zero vectors if we somehow ended up with fewer (shouldn't happen)
-    while centroids.len() < k {
-        centroids.push(vec![0.0; dim]);
-    }
-
-    // ------------------------------------------------------------------
-    // 2. Iterate assignment → update (Lloyd)
-    // ------------------------------------------------------------------
-    let mut assignments = vec![0usize; n];
-    for _iter in 0..max_iter {
-        let mut changed = false;
-
-        // Assignment: each point → nearest centroid (higher score = closer)
-        for (i, vec) in data.iter().enumerate() {
-            let mut best = 0;
-            let mut best_score = f32::NEG_INFINITY;
-            for (j, c) in centroids.iter().enumerate() {
-                let s = distance::score(vec, c, metric);
-                if s > best_score {
-                    best_score = s;
-                    best = j;
-                }
-            }
-            if assignments[i] != best {
-                assignments[i] = best;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-
-        // Update: mean of assigned points
-        let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dim]; k];
-        let mut counts = vec![0usize; k];
-        for (i, vec) in data.iter().enumerate() {
-            let c = assignments[i];
-            for (d, &v) in vec.iter().enumerate() {
-                sums[c][d] += v;
-            }
-            counts[c] += 1;
-        }
-        for (j, sum) in sums.iter().enumerate() {
-            if counts[j] > 0 {
-                let inv = 1.0 / counts[j] as f32;
-                for d in 0..dim {
-                    centroids[j][d] = sum[d] * inv;
-                }
-            }
-        }
-    }
-
-    centroids
-}
-
-/// Squared Euclidean distance between two f32 slices, returned as f64
-/// (to avoid overflow when summing many dimensions).
-#[inline]
-fn squared_euclidean(a: &[f32], b: &[f32]) -> f64 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| {
-            let d = *x as f64 - *y as f64;
-            d * d
-        })
-        .sum()
-}
-
-// ---------------------------------------------------------------------------
 // IvfPqIndex
 // ---------------------------------------------------------------------------
 
@@ -265,18 +151,18 @@ fn squared_euclidean(a: &[f32], b: &[f32]) -> f64 {
 ///
 /// let mut idx = IvfPqIndex::new(IvfPqConfig {
 ///     n_list: 4,
-///     m_subspaces: 2,
+///     m_subspaces: 8,
 ///     n_probe: 2,
 ///     metric: Metric::Cosine,
 ///     ..Default::default()
 /// });
 ///
 /// let doc = Document::builder("a", "hello")
-///     .embedding(vec![1.0, 0.0, 0.0, 0.0])
+///     .embedding(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 ///     .build();
 /// idx.insert(&[doc]);
 ///
-/// let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 5);
+/// let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5);
 /// assert_eq!(results.len(), 1);
 /// ```
 #[derive(Clone)]
@@ -294,6 +180,10 @@ pub struct IvfPqIndex {
 
     /// Zero-copy embedding storage (optional).
     storage: Option<Arc<dyn VectorStorage>>,
+
+    /// Number of documents added via incremental append since last full rebuild.
+    /// Reset to 0 after every `build_index()` call.
+    stale_docs: usize,
 }
 
 impl std::fmt::Debug for IvfPqIndex {
@@ -306,12 +196,18 @@ impl std::fmt::Debug for IvfPqIndex {
             .field("codebooks", &self.codebooks)
             .field("codes", &self.codes)
             .field("storage", &self.storage.as_ref().map(|_| ".."))
+            .field("stale_docs", &self.stale_docs)
             .finish()
     }
 }
 
 impl IvfPqIndex {
     pub fn new(config: IvfPqConfig) -> Self {
+        debug_assert!(
+            config.validate().is_ok(),
+            "IvfPqConfig::new called with invalid config: {:?}",
+            config.validate()
+        );
         Self {
             documents: Vec::new(),
             config,
@@ -320,6 +216,7 @@ impl IvfPqIndex {
             codebooks: Vec::new(),
             codes: Vec::new(),
             storage: None,
+            stale_docs: 0,
         }
     }
 
@@ -367,6 +264,22 @@ impl IvfPqIndex {
         &self.codes
     }
 
+    /// Number of incrementally-added documents since last full rebuild.
+    pub fn stale_docs(&self) -> usize {
+        self.stale_docs
+    }
+
+    /// Ratio of stale (incrementally-added) docs vs total (0.0–1.0).
+    ///
+    /// When this exceeds [`IvfPqConfig::rebuild_threshold`], the next
+    /// `insert()` triggers a full rebuild.
+    pub fn stale_ratio(&self) -> f64 {
+        if self.documents.is_empty() {
+            return 0.0;
+        }
+        self.stale_docs as f64 / self.documents.len() as f64
+    }
+
     /// Build an index from pre-computed state (used by persistence load).
     pub(crate) fn from_state(
         documents: Vec<Document>,
@@ -375,6 +288,7 @@ impl IvfPqIndex {
         codebooks: Vec<Vec<Vec<f32>>>,
         codes: Vec<Vec<u8>>,
         clusters: Vec<Vec<usize>>,
+        stale_docs: usize,
     ) -> Self {
         Self {
             documents,
@@ -384,6 +298,7 @@ impl IvfPqIndex {
             codebooks,
             codes,
             storage: None,
+            stale_docs,
         }
     }
 
@@ -391,31 +306,67 @@ impl IvfPqIndex {
     // Insert
     // ------------------------------------------------------------------
 
-    /// Insert documents and rebuild the index.
+    /// Insert documents — uses incremental append for small batches
+    /// and full rebuild when stale ratio exceeds the threshold.
     ///
     /// Each document **must** have a non‑empty embedding.  Documents
     /// without an embedding are silently skipped.
     ///
-    /// IVF-PQ rebuilds from scratch after every insert (the codebooks
-    /// depend on the full dataset distribution).
+    /// **Insertion logic:**
+    /// - **Empty index** or batch ≥ `batch_rebuild_size` → full rebuild.
+    /// - **Otherwise** → incremental append (frozen centroids + codebooks).
+    ///   When `stale_ratio` exceeds `rebuild_threshold`, a full rebuild
+    ///   is triggered automatically.
     pub fn insert(&mut self, docs: &[Document]) {
-        // Memory guard antes de grandes asignaciones
-        if !docs.is_empty() {
-            if let Err(e) = crate::memory::ensure_memory() {
-                eprintln!("❌ MemoryGuard detuvo IvfPqIndex::insert: {e}");
-                return;
-            }
-        }
-        let valid: Vec<Document> = docs
-            .iter()
-            .filter(|d| !d.embedding.is_empty())
-            .cloned()
-            .collect();
-        if valid.is_empty() {
+        if docs.is_empty() {
             return;
         }
-        self.documents.extend(valid);
-        self.build_index();
+
+        // Memory guard
+        if let Err(e) = crate::memory::ensure_memory() {
+            log::error!("MemoryGuard blocked IvfPqIndex::insert: {e}");
+            return;
+        }
+
+        // Count valid docs (non-empty embeddings)
+        let valid_count = docs.iter().filter(|d| !d.embedding.is_empty()).count();
+        if valid_count == 0 {
+            return;
+        }
+
+        // Empty index or large batch → full rebuild
+        if self.documents.is_empty() || valid_count >= self.config.batch_rebuild_size {
+            let valid: Vec<Document> = docs
+                .iter()
+                .filter(|d| !d.embedding.is_empty())
+                .cloned()
+                .collect();
+            self.documents.extend(valid);
+            self.build_index();
+            return;
+        }
+
+        // Incremental append
+        let appended = self.append_incremental(docs);
+        if appended == 0 {
+            return;
+        }
+        self.stale_docs += appended;
+
+        // Check if we need a full rebuild
+        let total = self.documents.len();
+        let stale_ratio = self.stale_docs as f64 / total as f64;
+
+        if stale_ratio >= self.config.rebuild_threshold {
+            log::warn!(
+                "IVF-PQ stale ratio {:.1}% >= {:.0}% — triggering full rebuild",
+                stale_ratio * 100.0,
+                self.config.rebuild_threshold * 100.0,
+            );
+            // self.documents already contains the incremental additions,
+            // so build_index() reconstructs everything from scratch
+            self.build_index();
+        }
     }
 
     /// (Re)build the entire IVF-PQ index from `self.documents`.
@@ -425,9 +376,9 @@ impl IvfPqIndex {
             return;
         }
 
-        // Memory guard: build_index asigna all_vecs (gran allocation)
+        // Memory guard: build_index allocates all_vecs (large allocation)
         if let Err(e) = crate::memory::ensure_memory() {
-            eprintln!("❌ MemoryGuard detuvo IvfPqIndex::build_index: {e}");
+            log::error!("MemoryGuard blocked IvfPqIndex::build_index: {e}");
             return;
         }
 
@@ -505,6 +456,76 @@ impl IvfPqIndex {
             }
             self.codes.push(code);
         }
+
+        self.stale_docs = 0;
+    }
+
+    /// Append documents incrementally — no centroids or codebooks are updated.
+    ///
+    /// Each new doc is:
+    /// 1. Assigned to the nearest existing IVF centroid.
+    /// 2. Encoded with the existing PQ codebooks.
+    /// 3. Appended to `self.documents`, `self.codes`, `self.clusters[best]`.
+    ///
+    /// Returns the number of valid documents actually appended.
+    ///
+    /// # Panics
+    /// Panics if called on an uninitialised index (no centroids exist).
+    fn append_incremental(&mut self, docs: &[Document]) -> usize {
+        if docs.is_empty() || self.centroids.is_empty() {
+            return 0;
+        }
+
+        let valid: Vec<&Document> = docs.iter().filter(|d| !d.embedding.is_empty()).collect();
+        if valid.is_empty() {
+            return 0;
+        }
+
+        let dim = self.documents[0].embedding.len();
+        let m = self.config.m_subspaces.max(1);
+        let subdim = dim / m;
+
+        for &doc in &valid {
+            let emb = &doc.embedding;
+
+            // 1. Assign to nearest existing centroid
+            let mut best_ci = 0usize;
+            let mut best_score = f32::NEG_INFINITY;
+            for (j, c) in self.centroids.iter().enumerate() {
+                let s = distance::score(emb, c, self.config.metric);
+                if s > best_score {
+                    best_score = s;
+                    best_ci = j;
+                }
+            }
+
+            // 2. PQ encode with existing codebooks
+            let mut code = Vec::with_capacity(m);
+            for sub_idx in 0..m {
+                let start = sub_idx * subdim;
+                let end = start + subdim;
+                let subvec = &emb[start..end];
+                let cb = &self.codebooks[sub_idx];
+
+                let mut best_c = 0u8;
+                let mut best_dist = f32::NEG_INFINITY;
+                for (c_idx, centroid) in cb.iter().enumerate() {
+                    let s = distance::score(subvec, centroid, self.config.metric);
+                    if s > best_dist {
+                        best_dist = s;
+                        best_c = c_idx as u8;
+                    }
+                }
+                code.push(best_c);
+            }
+
+            // 3. Append
+            self.documents.push(doc.clone());
+            self.codes.push(code);
+            self.clusters[best_ci].push(self.documents.len() - 1);
+        }
+
+        valid.len()
     }
 
     // ------------------------------------------------------------------
@@ -681,7 +702,7 @@ mod tests {
     fn small_config() -> IvfPqConfig {
         IvfPqConfig {
             n_list: 4,
-            m_subspaces: 2,
+            m_subspaces: 8,
             n_probe: 2,
             metric: Metric::Cosine,
             ..Default::default()
@@ -693,16 +714,18 @@ mod tests {
     #[test]
     fn test_empty_index() {
         let idx = IvfPqIndex::new(small_config());
-        assert!(idx.search(&[1.0, 0.0, 0.0, 0.0], 5).is_empty());
+        assert!(idx
+            .search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5)
+            .is_empty());
         assert!(idx.is_empty());
     }
 
     #[test]
     fn test_single_insert() {
         let mut idx = IvfPqIndex::new(small_config());
-        idx.insert(&[make_doc("a", vec![1.0, 0.0, 0.0, 0.0])]);
+        idx.insert(&[make_doc("a", vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]);
         assert_eq!(idx.len(), 1);
-        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 5);
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].document.id, "a");
     }
@@ -711,7 +734,12 @@ mod tests {
     fn test_insert_batch() {
         let mut idx = IvfPqIndex::new(small_config());
         let docs: Vec<Document> = (0..10)
-            .map(|i| make_doc(&format!("d{}", i), vec![i as f32, 0.0, 0.0, 0.0]))
+            .map(|i| {
+                make_doc(
+                    &format!("d{}", i),
+                    vec![i as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )
+            })
             .collect();
         idx.insert(&docs);
         assert_eq!(idx.len(), 10);
@@ -721,10 +749,10 @@ mod tests {
     fn test_search_returns_closest() {
         let mut idx = IvfPqIndex::new(small_config());
         idx.insert(&[
-            make_doc("a", vec![1.0, 0.0, 0.0, 0.0]),
-            make_doc("b", vec![0.0, 1.0, 0.0, 0.0]),
+            make_doc("a", vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            make_doc("b", vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         ]);
-        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 2);
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].document.id, "a");
     }
@@ -733,7 +761,7 @@ mod tests {
     fn test_documents_without_embedding_skipped() {
         let mut idx = IvfPqIndex::new(small_config());
         idx.insert(&[
-            make_doc("a", vec![1.0, 0.0, 0.0, 0.0]),
+            make_doc("a", vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             Document::new("b", "no embedding"),
         ]);
         assert_eq!(idx.len(), 1);
@@ -743,8 +771,8 @@ mod tests {
     fn test_delete() {
         let mut idx = IvfPqIndex::new(small_config());
         idx.insert(&[
-            make_doc("a", vec![1.0, 0.0, 0.0, 0.0]),
-            make_doc("b", vec![0.0, 1.0, 0.0, 0.0]),
+            make_doc("a", vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            make_doc("b", vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         ]);
         assert_eq!(idx.len(), 2);
         let deleted = Index::delete(&mut idx, &["a"]);
@@ -757,7 +785,7 @@ mod tests {
         let mut bf = BruteForceIndex::new(Metric::Cosine);
         let mut ivf = IvfPqIndex::new(IvfPqConfig {
             n_list: 5,
-            m_subspaces: 2,
+            m_subspaces: 8,
             n_probe: 3,
             metric: Metric::Cosine,
             ..Default::default()
@@ -768,13 +796,22 @@ mod tests {
             let angle = i as f64 * 0.12566;
             docs.push(make_doc(
                 &format!("d{}", i),
-                vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                vec![
+                    angle.cos() as f32,
+                    angle.sin() as f32,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             ));
         }
         bf.insert(&docs);
         ivf.insert(&docs);
 
-        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let query = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let bf_res = bf.search(&query, 5);
         let ivf_res = ivf.search(&query, 5);
 
@@ -799,13 +836,22 @@ mod tests {
                 let angle = i as f64 * 0.314159;
                 make_doc(
                     &format!("d{}", i),
-                    vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                    vec![
+                        angle.cos() as f32,
+                        angle.sin() as f32,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
                 )
             })
             .collect();
         idx.insert(&docs);
 
-        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 10);
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 10);
         assert!(!results.is_empty(), "should return at least some results");
         for i in 0..results.len().saturating_sub(1) {
             assert!(
@@ -859,14 +905,14 @@ mod tests {
         // (and likely fewer candidates at the extremes)
         let cfg_low = IvfPqConfig {
             n_list: 8,
-            m_subspaces: 2,
+            m_subspaces: 8,
             n_probe: 1,
             metric: Metric::Cosine,
             ..Default::default()
         };
         let cfg_high = IvfPqConfig {
             n_list: 8,
-            m_subspaces: 2,
+            m_subspaces: 8,
             n_probe: 10,
             metric: Metric::Cosine,
             ..Default::default()
@@ -880,14 +926,23 @@ mod tests {
                 let angle = i as f64 * 0.0785398;
                 make_doc(
                     &format!("d{}", i),
-                    vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                    vec![
+                        angle.cos() as f32,
+                        angle.sin() as f32,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
                 )
             })
             .collect();
         idx_low.insert(&docs);
         idx_high.insert(&docs);
 
-        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let query = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
         let results_low = idx_low.search(&query, 5);
         let results_high = idx_high.search(&query, 5);
@@ -947,10 +1002,11 @@ mod tests {
         // the search still produces valid (sorted) results
         let cfg_idx = IvfPqConfig {
             n_list: 4,
-            m_subspaces: 2,
+            m_subspaces: 8,
             n_probe: 4,
             metric: Metric::Cosine,
             rerank_enabled: true,
+            ..IvfPqConfig::default()
         };
         let mut idx = IvfPqIndex::new(cfg_idx);
         let docs: Vec<Document> = (0..20)
@@ -958,13 +1014,22 @@ mod tests {
                 let angle = i as f64 * 0.314159;
                 make_doc(
                     &format!("d{}", i),
-                    vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0],
+                    vec![
+                        angle.cos() as f32,
+                        angle.sin() as f32,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
                 )
             })
             .collect();
         idx.insert(&docs);
 
-        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 5);
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5);
         assert!(!results.is_empty());
         // Results should still be sorted correctly
         for i in 0..results.len().saturating_sub(1) {

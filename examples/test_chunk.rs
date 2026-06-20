@@ -7,11 +7,15 @@ use std::path::Path;
 fn rss_kb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
-        .and_then(|s| s.lines().find_map(|l| {
-            if l.starts_with("VmRSS:") {
-                l.split_whitespace().nth(1).and_then(|v| v.parse().ok())
-            } else { None }
-        }))
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                if l.starts_with("VmRSS:") {
+                    l.split_whitespace().nth(1).and_then(|v| v.parse().ok())
+                } else {
+                    None
+                }
+            })
+        })
         .unwrap_or(0)
 }
 
@@ -36,6 +40,9 @@ fn main() {
 
     for (i, doc) in docs.iter().enumerate() {
         eprintln!("  chunk[{}]: {} bytes, id={}", i, doc.text.len(), doc.id);
-        if i >= 10 { eprintln!("  ... (showing first 10 only)"); break; }
+        if i >= 10 {
+            eprintln!("  ... (showing first 10 only)");
+            break;
+        }
     }
 }

@@ -1,11 +1,11 @@
-// Test mínimo: solo BruteForce, sin chunker, sin archivos.
+// Minimal test: BruteForce only, no chunker, no files.
 use dogma_vdb::distance::Metric;
 use dogma_vdb::doc::Document;
 use dogma_vdb::index::{BruteForceIndex, Index};
 
 fn main() {
-    eprintln!("═══ Test mínimo BruteForce ═══");
-    eprintln!("Creando 100 docs aleatorios...");
+    eprintln!("═══ Minimal BruteForce test ═══");
+    eprintln!("Creating 100 random docs...");
 
     let docs: Vec<Document> = (0..100)
         .map(|i| {
@@ -16,15 +16,15 @@ fn main() {
         })
         .collect();
 
-    eprintln!("Insertando en BruteForceIndex...");
+    eprintln!("Inserting into BruteForceIndex...");
     let mut bf = BruteForceIndex::new(Metric::Cosine);
     bf.insert(&docs);
     eprintln!("Insert OK. {} docs", bf.len());
 
-    eprintln!("Buscando...");
+    eprintln!("Searching...");
     let query = vec![0.5f32; 64];
     let results = bf.search(&query, 5);
-    eprintln!("Search OK. {} resultados", results.len());
+    eprintln!("Search OK. {} results", results.len());
     for r in &results {
         eprintln!("  {} score={}", r.document.id, r.score);
     }

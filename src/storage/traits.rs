@@ -149,13 +149,7 @@ impl MmapBackedStorage {
             path: path.as_ref().to_path_buf(),
             source: e,
         })?;
-        // SAFETY: read-only mapping, file not modified while mapped.
-        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| crate::error::Error::Io {
-            path: path.as_ref().to_path_buf(),
-            source: e,
-        })?;
-        // Hint: random access pattern — no readahead, no page-clustering
-        let _ = mmap.advise(memmap2::Advice::Random);
+        let mmap = crate::storage::mmap_file(&file)?;
         Ok(Self { _file: file, mmap })
     }
 
@@ -172,23 +166,9 @@ impl MmapBackedStorage {
             path: path.as_ref().to_path_buf(),
             source: e,
         })?;
-        // SAFETY: mmap with explicit offset/len requires offset to be
-        // page-aligned.  The caller is responsible for this guarantee.
-        let mmap = unsafe {
-            memmap2::MmapOptions::new()
-                .offset(offset)
-                .len(len)
-                .map(&file)
-        }
-        .map_err(|e| crate::error::Error::Io {
-            path: path.as_ref().to_path_buf(),
-            source: e,
-        })?;
-        // Hint: random access pattern — no readahead, no page-clustering
-        let _ = mmap.advise(memmap2::Advice::Random);
+        let mmap = crate::storage::mmap_file_offset(&file, offset, len)?;
         Ok(Self { _file: file, mmap })
     }
-
 }
 
 impl VectorStorage for MmapBackedStorage {

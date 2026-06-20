@@ -1,9 +1,7 @@
 //! Lightweight benchmark on hermes-agent with file sampling.
 //! Usage: HERMES_AGENT_PATH=... cargo run --release --example bench_hermes
 use dogma_vdb::distance::Metric;
-use dogma_vdb::index::{
-    BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex,
-};
+use dogma_vdb::index::{BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex};
 use dogma_vdb::smart_chunker::SmartChunker;
 use std::collections::HashMap;
 use std::path::Path;
@@ -85,8 +83,8 @@ fn main() {
     // ── Ingest ──
     let chunker = SmartChunker::default();
     let binary_exts: &[&str] = &[
-        "png", "jpg", "jpeg", "gif", "ico", "woff2", "woff", "ttf", "otf", "eot",
-        "pdf", "zip", "gz", "pyc", "mp3", "mp4", "webm",
+        "png", "jpg", "jpeg", "gif", "ico", "woff2", "woff", "ttf", "otf", "eot", "pdf", "zip",
+        "gz", "pyc", "mp3", "mp4", "webm",
     ];
 
     let mut all_docs = Vec::new();
@@ -134,7 +132,11 @@ fn main() {
         doc.embedding = embed_text(&doc.text);
     }
     let embed_t = t0.elapsed();
-    eprintln!("Embed: {} docs, {:.2}s", all_docs.len(), embed_t.as_secs_f64());
+    eprintln!(
+        "Embed: {} docs, {:.2}s",
+        all_docs.len(),
+        embed_t.as_secs_f64()
+    );
     let doc_count = all_docs.len();
 
     // ── Index build (MEMORY-EFFICIENT: drop all_docs after last index) ──
@@ -173,13 +175,14 @@ fn main() {
             n_probe: 8,
             metric: Metric::Cosine,
             rerank_enabled: false,
+            ..IvfPqConfig::default()
         };
         let _ = config.validate();
         let mut idx = IvfPqIndex::new(config);
         idx.insert(&all_docs);
         (idx, t.elapsed())
     };
-    // Liberar all_docs INMEDIATAMENTE después del último índice
+    // Free all_docs immediately after last index build
     drop(all_docs);
     eprintln!("  IVF-PQ:     {:>8.2} ms", t_ivfpq.as_secs_f64() * 1000.0);
 
@@ -188,10 +191,8 @@ fn main() {
         .map(|_| {
             (0..DIM)
                 .map(|i| {
-                    let v = ((i as u64 * 6364136223846793005)
-                        .wrapping_mul(QUERIES as u64 + 1)
-                        >> 33)
-                        as f64
+                    let v = ((i as u64 * 6364136223846793005).wrapping_mul(QUERIES as u64 + 1)
+                        >> 33) as f64
                         / 1e9;
                     v as f32
                 })
@@ -199,9 +200,7 @@ fn main() {
         })
         .collect();
 
-    eprintln!(
-        "\n── Query Benchmark ({QUERIES} queries, top_k={TOP_K}) ──"
-    );
+    eprintln!("\n── Query Benchmark ({QUERIES} queries, top_k={TOP_K}) ──");
 
     fn bench(
         label: &str,
@@ -265,7 +264,10 @@ fn main() {
     // Speedup vs BF
     eprintln!("\n── Speedup vs BruteForce ──");
     let bf_mean = latencies_for(&bf, &queries, TOP_K);
-    for (label, idx) in [("HNSW", &hnsw as &dyn Index), ("IVF-PQ", &ivfpq as &dyn Index)] {
+    for (label, idx) in [
+        ("HNSW", &hnsw as &dyn Index),
+        ("IVF-PQ", &ivfpq as &dyn Index),
+    ] {
         let m = latencies_for(idx, &queries, TOP_K);
         let speedup = bf_mean / m;
         eprintln!(
