@@ -739,6 +739,46 @@ mod tests {
     }
 
     #[test]
+    fn test_hybrid_search_with_phrase_query() {
+        use crate::config::{PerformanceProfile, QueryPipelineConfig};
+        use crate::index::bm25::Bm25Index;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut col =
+            Collection::open_with(dir.path().join("phrase.vdb"), "bruteforce", "cosine").unwrap();
+        col.insert(
+            Document::builder("a", "part time job opening")
+                .embedding(vec![1.0, 0.0])
+                .build(),
+        )
+        .unwrap();
+        col.insert(
+            Document::builder("b", "time to find a part")
+                .embedding(vec![0.0, 1.0])
+                .build(),
+        )
+        .unwrap();
+
+        let mut bm25 = Bm25Index::new();
+        for (i, d) in col.index.documents().iter().enumerate() {
+            bm25.insert(i, &d.text);
+        }
+
+        let cfg = QueryPipelineConfig {
+            profile: PerformanceProfile::PrecisionLocal,
+            top_k: 5,
+        };
+
+        // Phrase query "part time" should only match doc a
+        let results = col.hybrid_search(&[1.0, 0.0], "\"part time\"", Some(&bm25), None, &cfg);
+        assert!(!results.is_empty(), "phrase search should return results");
+        assert_eq!(
+            results[0].document.id, "a",
+            "phrase 'part time' should match doc a (consecutive), not doc b"
+        );
+    }
+
+    #[test]
     fn test_pipeline_profile_behavior() {
         use crate::config::{PerformanceProfile, QueryPipelineConfig};
 
