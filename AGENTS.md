@@ -11,45 +11,51 @@ Every line of code must justify its existence. We prefer **50 clear lines** over
 
 ---
 
-## ✅ CURRENT STATUS (2026-05-17)
+## ✅ CURRENT STATUS (2026-06-19)
 
-### Core crate (`dogma-vdb`) — COMPILES and 152 TESTS PASS
+### Core crate (`dogma-vdb`) — COMPILES and 198 TESTS PASS
 
 | Module | File | Lines | Tests | Status |
 |--------|---------|-------|-------|--------|
-| Document | `src/doc.rs` | 205 | 8 | Complete |
-| Error | `src/error.rs` | 45 | - | Complete |
+| Document | `src/doc.rs` | ~210 | 8 | Complete, `#[must_use]` |
+| Error | `src/error.rs` | ~50 | - | Complete (+ `IncompatibleVersion`) |
 | Distance | `src/distance.rs` | 209 | 16 | Complete |
 | Filter | `src/filter.rs` | 122 | 9 | Complete |
-| Storage (JSONL) | `src/storage.rs` | 307 | 15 | Complete |
-| Collection | `src/collection.rs` | ~530 | 15 | Complete |
-| Runtime Config | `src/config.rs` | ~320 | - | Complete |
+| Storage (binary) | `src/storage/mod.rs` | ~590 | 20 | Complete, zero-copy mmap |
+| Storage traits | `src/storage/traits.rs` | ~270 | 7 | Complete, `MmapBackedStorage` sub-regions |
+| Collection | `src/collection.rs` | ~780 | 20 | Complete, injectable config |
+| Runtime Config | `src/config.rs` | ~400 | - | Complete |
 | Chunker | `src/chunker.rs` | 247 | 8 | Complete |
 | Embedder trait | `src/embedding.rs` | 28 | - | Complete |
-| SmartChunker | `src/smart_chunker/` | ~560 | 20+ | Complete |
-| Index trait | `src/index/mod.rs` | 67 | - | Complete |
-| Index (BruteForce) | `src/index/brute_force.rs` | 440 | 18 | Complete |
-| Index (HNSW) | `src/index/hnsw.rs` | ~840 | 21 | Complete |
-| Index (IVF-PQ) | `src/index/ivf_pq.rs` | ~400 | 8 | New |
-| Index (Annoy) | ~~`src/index/annoy.rs`~~ | — | — | **Removed** |
+| SmartChunker | `src/smart_chunker/` | ~685 | 20+ | Complete |
+| Memory guard | `src/memory.rs` | ~170 | 4 | Complete (Linux-only, English) |
+| Reranker trait | `src/rerank.rs` | 69 | 2 | Complete |
+| Index trait | `src/index/mod.rs` | ~115 | - | Complete (+ `save`/`load`) |
+| Index (BruteForce) | `src/index/brute_force.rs` | ~516 | 18 | Complete, `#[must_use]` |
+| Index (HNSW) | `src/index/hnsw.rs` | ~1055 | 21 | Complete |
+| Index (IVF-PQ) | `src/index/ivf_pq.rs` | ~1100 | 21 | Complete, tombstone delete |
+| Index (BM25) | `src/index/bm25.rs` | ~267 | 7 | Complete |
+| Index (RRF) | `src/index/rrf.rs` | ~125 | 5 | Complete |
+| K-Means | `src/index/kmeans.rs` | ~207 | 7 | Complete (extracted from IVF-PQ) |
 | SQ module | `src/index/sq.rs` | ~230 | 8 | Complete |
-| Watcher | `src/watch.rs` | 56 | - | **SKELETON** (`todo!()`) |
-| MCP Server | `src/mcp.rs` | 36 | - | **SKELETON** (`todo!()`) |
+| Watcher | `src/watch.rs` | ~316 | - | Complete (debounce + batch) |
 
 ### Sub-crates
 
 | Crate | File | Status |
 |-------|---------|--------|
-| `dogma-vdb-cli` | `cli/src/main.rs` | Complete (info, list, query, ingest, delete) |
+| `dogma-vdb-cli` | `cli/src/main.rs` | Complete (+ `rag` feature flag) |
 | `dogma-vdb-mcp` | `mcp/src/main.rs` | Complete (vecdb_query, ingest, delete, list, info) |
 | `dogma-vdb-embed` | `embed/src/lib.rs` | Complete (trait definition) |
 | `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | Complete (FastEmbedder with ONNX MiniLM-L6-v2) |
+| `dogma-vdb-rerank` | `rerank/src/lib.rs` | Complete (OnnxReranker) |
+| `dogma-vdb-rag` | `rag/src/main.rs` | Complete (kept for backward compat) |
 
 ### Tests
-- Unit: 139 pass
-- Integration: 9 pass
-- Doc-tests: 8 pass, 2 ignored
-- **Total: 156 tests, 0 failures**
+- Unit: 181 pass
+- Integration: 8 pass
+- Doc-tests: 9 pass, 3 ignored
+- **Total: 198 tests, 0 failures**
 
 ---
 
@@ -75,11 +81,15 @@ If a module grows larger, it gets split.
 **Required core deps (currently):**
 - `serde` + `serde_json` + `thiserror` — essential
 - `regex-lite` — smart chunker (regex lightweight)
+- `rayon` — parallel iteration
+- `wide` — SIMD-accelerated dot product / distance
+- `bytemuck` — safe f32<->[u8] reinterpret
+- `memmap2` — zero-copy memory-mapped I/O
 - `once_cell` + `toml` + `log` — runtime config
 
 **Optional deps (features):**
 - `watch` → `notify` + `crossbeam-channel`
-- `mcp` → `rmcp` + `tokio` + `tracing` + `clap`
+- `chunker-syntax` → `tree-sitter` + language grammars
 
 ### 4. Testing from the start
 
@@ -319,12 +329,12 @@ If everything passes, the code can be merged.
 - [x] SQ rescore (recover recall with f32)
 - [x] IVF-PQ index (inverted file + product quantization)
 - [x] Config env vars for all fields
-- [ ] Implement `watch.rs` (file system watcher, feature = "watch")
-- [ ] Implement `mcp.rs` (MCP server, feature = "mcp")
+- [x] Implement `watch.rs` (file system watcher, feature = "watch")
+- [x] Implement `mcp.rs` (MCP server, feature = "mcp")
 - [x] Implement real FastEmbed (`dogma-vdb-embed-fastembed`)
 - [x] Multi-crate workspace (root Cargo.toml)
 - [ ] Complete examples in `examples/`
 
 ---
 
-*Last updated: 2026-05-16*
+*Last updated: 2026-06-19*

@@ -274,7 +274,7 @@ fn bench_bf(data: &TestData, ctx: &BenchContext) -> IndexResult {
 
     // Warmup
     for _ in 0..WARMUP {
-        bf.search(&ctx.queries[0], 10);
+        let _ = bf.search(&ctx.queries[0], 10);
     }
 
     // Latency (200 queries sobre 50 queries distintas)
@@ -283,7 +283,7 @@ fn bench_bf(data: &TestData, ctx: &BenchContext) -> IndexResult {
     for i in 0..QUERY_ITERS {
         let q = &ctx.queries[i % ctx.queries.len()];
         let start = Instant::now();
-        bf.search(q, 100);
+        let _ = bf.search(q, 100);
         latencies.push(start.elapsed().as_secs_f64() * 1_000_000.0);
     }
     let total_s = t0.elapsed().as_secs_f64();
@@ -747,7 +747,7 @@ fn bench_chunking() -> (f64, f64, u64) {
                 let path = entry.path();
                 if path.is_dir() {
                     collect(&path, code, bytes);
-                } else if path.extension().map_or(false, |e| e == "rs") {
+                } else if path.extension().is_some_and(|e| e == "rs") {
                     if let Ok(content) = fs::read_to_string(&path) {
                         *bytes += content.len() as u64;
                         code.push_str(&content);
