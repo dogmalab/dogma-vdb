@@ -333,7 +333,7 @@ If everything passes, the code can be merged.
 - [x] Implement `mcp.rs` (MCP server, feature = "mcp")
 - [x] Implement real FastEmbed (`dogma-vdb-embed-fastembed`)
 - [x] Multi-crate workspace (root Cargo.toml)
-- [ ] Complete examples in `examples/`
+- [x] Complete examples in `examples/`
 
 ---
 
