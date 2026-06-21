@@ -924,4 +924,96 @@ mod tests {
             assert!(!r.is_empty(), "search after reopen should return results");
         }
     }
+
+    #[test]
+    fn test_dim_from_storage_calculation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dim_test.vdb");
+
+        // Create collection with specific dim
+        {
+            let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            col.insert(
+                Document::builder("a", "hello")
+                    .embedding(vec![1.0, 2.0, 3.0, 4.0])
+                    .build(),
+            )
+            .unwrap();
+            col.insert(
+                Document::builder("b", "world")
+                    .embedding(vec![5.0, 6.0, 7.0, 8.0])
+                    .build(),
+            )
+            .unwrap();
+        }
+
+        // Reopen — verify dim is calculated correctly from storage
+        {
+            let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            assert_eq!(col.len(), 2);
+
+            // Search should work with correct dim
+            let r = col.search(&[1.0, 2.0, 3.0, 4.0], 2);
+            assert_eq!(r.len(), 2);
+            assert_eq!(r[0].document.id, "a");
+
+            // Verify the score is correct (cosine of identical vectors = 1.0)
+            assert!(
+                (r[0].score - 1.0).abs() < 1e-5,
+                "score should be ~1.0 for identical vectors, got {}",
+                r[0].score
+            );
+        }
+    }
+
+    #[test]
+    fn test_dim_from_storage_21_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dim_21.vdb");
+
+        // Create 21 docs with dim=4 — each doc has a unique direction
+        {
+            let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            for i in 0..21 {
+                let angle = i as f64 * 0.3;
+                col.insert(
+                    Document::builder(format!("d{i}"), format!("doc {i}"))
+                        .embedding(vec![angle.cos() as f32, angle.sin() as f32, 0.0, 0.0])
+                        .build(),
+                )
+                .unwrap();
+            }
+        }
+
+        // Reopen — verify dim=4 (not dim=3), search works correctly
+        {
+            let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            assert_eq!(col.len(), 21);
+
+            // Query close to d0 (angle=0, emb=[1,0,0,0])
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0], 3);
+            assert_eq!(r.len(), 3, "should return 3 results");
+            assert_eq!(r[0].document.id, "d0", "d0 should be closest to [1,0,0,0]");
+
+            // Verify score is correct (cosine of [1,0,0,0] with itself = 1.0)
+            assert!(
+                (r[0].score - 1.0).abs() < 1e-5,
+                "score should be ~1.0, got {}",
+                r[0].score
+            );
+
+            // Verify dim is correct: score for d10 (angle=3.0, emb=[cos(3),sin(3),0,0])
+            // should be different from d0
+            let r10 = col.search(
+                &[
+                    (10.0_f64 * 0.3).cos() as f32,
+                    (10.0_f64 * 0.3).sin() as f32,
+                    0.0,
+                    0.0,
+                ],
+                1,
+            );
+            assert_eq!(r10[0].document.id, "d10");
+        }
+    }
 }
