@@ -99,11 +99,6 @@ impl Collection {
             None
         };
 
-        // Inject storage into the index backend
-        if let Some(ref s) = emb_storage {
-            index.set_storage(s.clone());
-        }
-
         Ok(Self {
             name,
             storage,
@@ -1014,6 +1009,46 @@ mod tests {
                 1,
             );
             assert_eq!(r10[0].document.id, "d10");
+        }
+    }
+
+    #[test]
+    fn test_triple_reopen_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triple.vdb");
+
+        // 1st open: create and insert
+        {
+            let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            for i in 1..=5 {
+                col.insert(
+                    Document::builder(format!("d{i}"), format!("doc {i}"))
+                        .embedding(vec![i as f32, 0.0, 0.0, 0.0])
+                        .build(),
+                )
+                .unwrap();
+            }
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0], 1);
+            assert_eq!(r.len(), 1);
+            assert!(r[0].score > 0.9, "score should be ~1.0");
+        }
+
+        // 2nd open: reopen (simulates SessionManager::open)
+        {
+            let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            assert_eq!(col.len(), 5);
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0], 1);
+            assert_eq!(r.len(), 1);
+            assert!(r[0].score > 0.9, "score should be ~1.0 after reopen");
+        }
+
+        // 3rd open: reopen again (simulates debug block + SessionManager)
+        {
+            let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            assert_eq!(col.len(), 5);
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0], 1);
+            assert_eq!(r.len(), 1);
+            assert!(r[0].score > 0.9, "score should be ~1.0 after 2nd reopen");
         }
     }
 }

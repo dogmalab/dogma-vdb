@@ -33,7 +33,7 @@
 
 use crate::doc::Document;
 use crate::error::{Error, Result};
-use crate::storage::traits::MmapBackedStorage;
+use crate::storage::traits::{MmapBackedStorage, VectorStorage};
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -209,6 +209,18 @@ impl BinStorage {
         let emb_storage = if dim > 0 && emb_offset + count * dim * 4 <= mmap.len() {
             let emb_len = count * dim * 4;
             let storage = MmapBackedStorage::from_mmap(file, mmap, emb_offset, emb_len);
+
+            // Populate document embeddings from mmap so that subsequent
+            // store() calls preserve them (the mmap becomes stale after
+            // the file is rewritten).
+            let emb_all = storage.as_embeddings();
+            for (i, doc) in docs.iter_mut().enumerate() {
+                let start = i * dim;
+                if start + dim <= emb_all.len() {
+                    doc.embedding = emb_all[start..start + dim].to_vec();
+                }
+            }
+
             Some(storage)
         } else {
             None

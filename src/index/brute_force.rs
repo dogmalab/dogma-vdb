@@ -336,6 +336,13 @@ impl Index for BruteForceIndex {
             if dim == 0 {
                 return Vec::new();
             }
+            eprintln!(
+                "BF search_filtered mmap: dim={}, emb_all.len()={}, docs.len()={}, query.len()={}",
+                dim,
+                emb_all.len(),
+                self.documents.len(),
+                query.len()
+            );
             self.documents
                 .par_iter()
                 .enumerate()

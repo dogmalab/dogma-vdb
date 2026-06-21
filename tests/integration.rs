@@ -147,3 +147,161 @@ fn test_document_builder_fluent() {
     assert!(doc.is_embedded());
     assert_eq!(doc.dimension(), 3);
 }
+
+#[test]
+fn test_dim_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dim_test.vdb");
+
+    // Insert docs with 4-dim embeddings
+    {
+        let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+        for i in 0..5 {
+            col.insert(make_embedded_doc(
+                &format!("doc-{i}"),
+                vec![1.0, 0.0, 0.0, 0.0],
+            ))
+            .unwrap();
+        }
+        eprintln!("After insert: col.len()={}", col.len());
+    }
+
+    // Reopen and check
+    let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+    eprintln!("After reopen: col.len()={}", col.len());
+
+    if let Some(store) = col.embedding_storage() {
+        let emb_all = store.as_embeddings();
+        eprintln!("emb_all.len()={}", emb_all.len());
+        let dim = emb_all.len() / col.len();
+        eprintln!("dim = {dim}");
+        assert_eq!(dim, 4, "dim should be 4 after reopen");
+    } else {
+        panic!("No embedding storage after reopen!");
+    }
+
+    // Search should work
+    let results = col.search(&[1.0, 0.0, 0.0, 0.0], 3);
+    eprintln!("search returned {} results", results.len());
+    assert!(!results.is_empty(), "search should return results");
+    assert_eq!(results[0].document.id, "doc-0");
+}
+
+#[test]
+fn test_dim_with_default_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dim_default.vdb");
+
+    // Use Collection::open (default config) like seed_collection does
+    {
+        let mut col = Collection::open(&path).unwrap();
+        for i in 0..5 {
+            col.insert(make_embedded_doc(
+                &format!("doc-{i}"),
+                vec![1.0, 0.0, 0.0, 0.0],
+            ))
+            .unwrap();
+        }
+        eprintln!("After insert: col.len()={}", col.len());
+    }
+
+    // Reopen with default config
+    let col = Collection::open(&path).unwrap();
+    eprintln!("After reopen: col.len()={}", col.len());
+
+    if let Some(store) = col.embedding_storage() {
+        let emb_all = store.as_embeddings();
+        eprintln!("emb_all.len()={}", emb_all.len());
+        let dim = emb_all.len() / col.len();
+        eprintln!("dim = {dim}");
+        assert_eq!(dim, 4, "dim should be 4 after reopen");
+    } else {
+        panic!("No embedding storage after reopen!");
+    }
+
+    let results = col.search(&[1.0, 0.0, 0.0, 0.0], 3);
+    eprintln!("search returned {} results", results.len());
+    assert!(!results.is_empty(), "search should return results");
+}
+
+#[test]
+fn test_dim_exact_memory_stress_scenario() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions.vdb");
+
+    // Exact same setup as memory_stress test_needle_in_a_haystack
+    let sid = "needle-test";
+    let secret_port = "9091";
+
+    let mut docs: Vec<Document> = (0..10)
+        .map(|i| {
+            Document::builder(format!("noise-pre-{i}"), format!("noise {i}"))
+                .embedding(vec![0.0, 0.1, 0.0, 0.0])
+                .metadata("node_type", "Message")
+                .metadata("session_id", sid)
+                .metadata("role", "user")
+                .metadata("sequence", i.to_string())
+                .metadata("edge_type", "NEXT")
+                .metadata("created_at", "2026-01-01T00:00:00Z")
+                .build()
+        })
+        .collect();
+
+    docs.push(
+        Document::builder("needle-1", format!("port {secret_port}"))
+            .embedding(vec![0.9, 0.0, 0.0, 0.0])
+            .metadata("node_type", "Message")
+            .metadata("session_id", sid)
+            .metadata("role", "user")
+            .metadata("sequence", "10")
+            .metadata("edge_type", "NEXT")
+            .metadata("created_at", "2026-01-01T00:00:00Z")
+            .build(),
+    );
+
+    for i in 0..10 {
+        docs.push(
+            Document::builder(format!("noise-post-{i}"), format!("noise post {i}"))
+                .embedding(vec![0.0, 0.1, 0.0, 0.0])
+                .metadata("node_type", "Message")
+                .metadata("session_id", sid)
+                .metadata("role", "user")
+                .metadata("sequence", (11 + i).to_string())
+                .metadata("edge_type", "NEXT")
+                .metadata("created_at", "2026-01-01T00:00:00Z")
+                .build(),
+        );
+    }
+
+    // seed_collection: open and insert
+    {
+        let mut col = Collection::open(&path).unwrap();
+        for doc in &docs {
+            col.insert(doc.clone()).unwrap();
+        }
+        eprintln!("After seed: col.len()={}", col.len());
+    }
+
+    // Reopen
+    let col = Collection::open(&path).unwrap();
+    eprintln!("After reopen: col.len()={}", col.len());
+
+    if let Some(store) = col.embedding_storage() {
+        let emb_all = store.as_embeddings();
+        eprintln!("emb_all.len()={}", emb_all.len());
+        eprintln!("dim = {}", emb_all.len() / col.len());
+    }
+
+    // Search with filter (like search_similar does)
+    let results = col.search_filtered(&[0.9, 0.0, 0.0, 0.0], 5, &|doc| {
+        doc.metadata_val("session_id") == Some(sid)
+            && doc.metadata_val("node_type") == Some("Message")
+    });
+    eprintln!("search_filtered returned {} results", results.len());
+    if !results.is_empty() {
+        eprintln!(
+            "top result: id={}, score={}",
+            results[0].document.id, results[0].score
+        );
+    }
+}
