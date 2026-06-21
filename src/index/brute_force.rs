@@ -122,6 +122,13 @@ impl Index for BruteForceIndex {
             }
         }
 
+        // When new docs with real embeddings are inserted, the mmap storage
+        // becomes stale (it only covers the original saved docs).
+        // Clear it so search falls back to per-document embeddings.
+        if docs.iter().any(|d| !d.embedding.is_empty()) {
+            self.storage = None;
+        }
+
         if self.sq {
             if self.embedding_i8.is_empty() {
                 // First batch: compute per‑dim scale/bias from all existing + new
@@ -183,11 +190,20 @@ impl Index for BruteForceIndex {
                 .collect()
         } else if let Some(ref storage) = self.storage {
             let emb_all = storage.as_embeddings();
-            let dim = self.dim;
+            // Calculate dim dynamically: storage may contain more or fewer docs
+            let dim = if self.dim > 0 {
+                self.dim
+            } else if !emb_all.is_empty() && !self.documents.is_empty() {
+                emb_all.len() / self.documents.len()
+            } else {
+                0
+            };
+            if dim == 0 {
+                return Vec::new();
+            }
             self.documents
                 .par_iter()
                 .enumerate()
-                .filter(|(_, d)| !d.embedding.is_empty())
                 .map(|(i, _)| {
                     let start = i * dim;
                     let emb = if start + dim <= emb_all.len() {
@@ -220,8 +236,22 @@ impl Index for BruteForceIndex {
             #[allow(clippy::needless_range_loop)]
             for i in 0..rescore_k {
                 let idx = candidates[i].0;
-                candidates[i].1 =
-                    crate::distance::score(&self.documents[idx].embedding, query, self.metric);
+                let emb = if self.documents[idx].embedding.is_empty() {
+                    if let Some(ref storage) = self.storage {
+                        let all = storage.as_embeddings();
+                        let start = idx * self.dim;
+                        if start + self.dim <= all.len() {
+                            &all[start..start + self.dim]
+                        } else {
+                            &self.documents[idx].embedding
+                        }
+                    } else {
+                        &self.documents[idx].embedding
+                    }
+                } else {
+                    &self.documents[idx].embedding
+                };
+                candidates[i].1 = crate::distance::score(emb, query, self.metric);
             }
             candidates[..rescore_k].sort_unstable_by(|a, b| {
                 b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
@@ -296,11 +326,19 @@ impl Index for BruteForceIndex {
                 .collect()
         } else if let Some(ref storage) = self.storage {
             let emb_all = storage.as_embeddings();
-            let dim = self.dim;
+            let dim = if self.dim > 0 {
+                self.dim
+            } else if !emb_all.is_empty() && !self.documents.is_empty() {
+                emb_all.len() / self.documents.len()
+            } else {
+                0
+            };
+            if dim == 0 {
+                return Vec::new();
+            }
             self.documents
                 .par_iter()
                 .enumerate()
-                .filter(|(_, d)| !d.embedding.is_empty())
                 .filter(|(_, d)| filter(d))
                 .map(|(i, _)| {
                     let start = i * dim;
@@ -335,8 +373,22 @@ impl Index for BruteForceIndex {
             #[allow(clippy::needless_range_loop)]
             for i in 0..rescore_k {
                 let idx = candidates[i].0;
-                candidates[i].1 =
-                    crate::distance::score(&self.documents[idx].embedding, query, self.metric);
+                let emb = if self.documents[idx].embedding.is_empty() {
+                    if let Some(ref storage) = self.storage {
+                        let all = storage.as_embeddings();
+                        let start = idx * self.dim;
+                        if start + self.dim <= all.len() {
+                            &all[start..start + self.dim]
+                        } else {
+                            &self.documents[idx].embedding
+                        }
+                    } else {
+                        &self.documents[idx].embedding
+                    }
+                } else {
+                    &self.documents[idx].embedding
+                };
+                candidates[i].1 = crate::distance::score(emb, query, self.metric);
             }
             candidates[..rescore_k].sort_unstable_by(|a, b| {
                 b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)

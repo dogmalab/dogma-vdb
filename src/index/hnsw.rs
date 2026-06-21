@@ -267,8 +267,22 @@ impl HnswIndex {
                 return;
             }
         }
+
+        let has_storage = self.storage.is_some();
+
+        // When new docs with real embeddings are inserted, the mmap storage
+        // becomes stale.  Clear it so search falls back to per-document embeddings.
+        if has_storage && docs.iter().any(|d| !d.embedding.is_empty()) {
+            self.storage = None;
+        }
+
         for doc in docs {
             if doc.embedding.is_empty() {
+                if has_storage {
+                    // mmap mode: store doc, set_storage() rebuilds graph later
+                    self.documents.push(doc.clone());
+                    self.node_layers.push(0);
+                }
                 continue;
             }
             self.insert_one(doc.clone());
@@ -467,6 +481,81 @@ impl HnswIndex {
         }
 
         // Update entry point if this node has a higher layer
+        if node_level > ep_layer {
+            self.entry_point = Some(node_id);
+        }
+    }
+
+    /// Build graph connections for a document that's already in `self.documents`
+    /// at the given `node_id`, using the provided embedding.
+    ///
+    /// Used by `set_storage()` to rebuild the graph from mmap data.
+    fn build_graph_node(&mut self, node_id: usize, emb: &[f32]) {
+        let node_level = Self::assign_level(node_id, self.ml);
+
+        while self.graphs.len() <= node_level {
+            self.graphs.push(Vec::new());
+        }
+        for g in &mut self.graphs {
+            while g.len() <= node_id {
+                g.push(Vec::new());
+            }
+        }
+
+        if self.dim == 0 && !emb.is_empty() {
+            self.dim = emb.len();
+        }
+
+        self.node_layers.push(node_level);
+
+        let ep = match self.entry_point {
+            None => {
+                self.entry_point = Some(node_id);
+                return;
+            }
+            Some(e) => e,
+        };
+        let ep_layer = self.node_layers[ep];
+        let top_layer = self.graphs.len().saturating_sub(1);
+        let mut ep = ep;
+
+        for layer in (node_level + 1..=top_layer).rev() {
+            let r = self.search_layer(emb, ep, 1, layer);
+            if let Some(best) = r.first() {
+                ep = best.node;
+            }
+        }
+
+        let max_conn = self.config.m;
+        let max_conn_0 = self.config.m * 2;
+
+        for layer in (0..=node_level).rev() {
+            let ef = if layer == 0 {
+                self.config.ef_construction.max(self.config.m)
+            } else {
+                self.config.ef_construction
+            };
+
+            let candidates = self.search_layer(emb, ep, ef, layer);
+            let limit = if layer == 0 { max_conn_0 } else { max_conn };
+            let neighbours: Vec<usize> =
+                candidates.into_iter().take(limit).map(|c| c.node).collect();
+
+            for &nei in &neighbours {
+                self.graphs[layer][node_id].push(nei);
+                let back = &mut self.graphs[layer][nei];
+                back.push(node_id);
+                let m_max = if layer == 0 { max_conn_0 } else { max_conn };
+                if back.len() > m_max {
+                    self.shrink_connections(layer, nei, m_max, emb);
+                }
+            }
+
+            if let Some(&first) = neighbours.first() {
+                ep = first;
+            }
+        }
+
         if node_level > ep_layer {
             self.entry_point = Some(node_id);
         }
@@ -686,6 +775,50 @@ impl HnswIndex {
 
 impl Index for HnswIndex {
     fn set_storage(&mut self, storage: Arc<dyn VectorStorage>) {
+        // If documents exist but graph is empty (mmap mode: docs have empty embeddings),
+        // rebuild the graph by reading embeddings from storage.
+        if !self.documents.is_empty() && self.graphs.is_empty() && !storage.is_empty() {
+            let doc_count = self.documents.len();
+            self.dim = storage.len() / doc_count;
+            let emb_all = storage.as_embeddings();
+
+            // Pre-populate node_layers for all existing documents
+            // (needed by build_graph_node which accesses node_layers[ep])
+            while self.node_layers.len() < doc_count {
+                let nid = self.node_layers.len();
+                self.node_layers.push(Self::assign_level(nid, self.ml));
+            }
+
+            // Ensure enough graph layers
+            let max_level = self.node_layers.iter().copied().max().unwrap_or(0);
+            while self.graphs.len() <= max_level {
+                self.graphs.push(Vec::new());
+            }
+            for g in &mut self.graphs {
+                while g.len() < doc_count {
+                    g.push(Vec::new());
+                }
+            }
+
+            // Set entry point to the document with the highest layer
+            let ep_id = self
+                .node_layers
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, &l)| l)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.entry_point = Some(ep_id);
+
+            // Build graph for each document
+            for i in 0..doc_count {
+                let start = i * self.dim;
+                if start + self.dim <= emb_all.len() {
+                    let emb = &emb_all[start..start + self.dim];
+                    self.build_graph_node(i, emb);
+                }
+            }
+        }
         self.storage = Some(storage);
     }
 

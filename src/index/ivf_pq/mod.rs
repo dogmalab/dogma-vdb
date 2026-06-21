@@ -333,7 +333,12 @@ impl IvfPqIndex {
 
 impl Index for IvfPqIndex {
     fn set_storage(&mut self, storage: Arc<dyn VectorStorage>) {
-        self.storage = Some(storage);
+        self.storage = Some(storage.clone());
+        // If documents exist but centroids are empty (mmap mode),
+        // rebuild the index reading embeddings from storage.
+        if !self.documents.is_empty() && self.centroids.is_empty() && !storage.is_empty() {
+            self.build_index();
+        }
     }
 
     fn insert(&mut self, docs: &[Document]) {

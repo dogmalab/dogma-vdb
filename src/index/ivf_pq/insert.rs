@@ -31,19 +31,33 @@ impl IvfPqIndex {
             return;
         }
 
-        // Count valid docs (non-empty embeddings)
-        let valid_count = docs.iter().filter(|d| !d.embedding.is_empty()).count();
+        // When new docs with real embeddings are inserted, the mmap storage
+        // becomes stale.  Clear it so build_index uses per-document embeddings.
+        if docs.iter().any(|d| !d.embedding.is_empty()) {
+            self.storage = None;
+        }
+
+        // When storage is present (mmap mode), docs with empty embeddings
+        // are valid — build_index() reads vectors from storage.
+        let valid_count = if self.storage.is_some() {
+            docs.len()
+        } else {
+            docs.iter().filter(|d| !d.embedding.is_empty()).count()
+        };
         if valid_count == 0 {
             return;
         }
 
         // Empty index or large batch → full rebuild
         if self.documents.is_empty() || valid_count >= self.config.batch_rebuild_size {
-            let valid: Vec<Document> = docs
-                .iter()
-                .filter(|d| !d.embedding.is_empty())
-                .cloned()
-                .collect();
+            let valid: Vec<Document> = if self.storage.is_some() {
+                docs.to_vec()
+            } else {
+                docs.iter()
+                    .filter(|d| !d.embedding.is_empty())
+                    .cloned()
+                    .collect()
+            };
             self.documents.extend(valid);
             self.build_index();
             return;
@@ -85,7 +99,17 @@ impl IvfPqIndex {
             return;
         }
 
-        let dim = self.documents[0].embedding.len();
+        // Calculate dim from documents or storage (mmap mode: docs have empty embeddings)
+        let dim = if !self.documents[0].embedding.is_empty() {
+            self.documents[0].embedding.len()
+        } else if let Some(ref storage) = self.storage {
+            storage.len() / n
+        } else {
+            0
+        };
+        if dim == 0 {
+            return;
+        }
         let m = self.config.m_subspaces.max(1);
         let subdim = dim / m;
         assert!(

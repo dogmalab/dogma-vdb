@@ -88,8 +88,13 @@ impl Collection {
         // Load via mmap — zero-copy for embeddings
         let emb_storage: Option<Arc<dyn VectorStorage>> = if storage.exists_with_magic() {
             let (documents, mmap_store) = storage.load_mmap()?;
+            let arc_store = mmap_store.map(|s| Arc::new(s) as Arc<dyn VectorStorage>);
+            // Inject storage BEFORE insert so backends can read embeddings
+            if let Some(ref s) = arc_store {
+                index.set_storage(s.clone());
+            }
             index.insert(&documents);
-            mmap_store.map(|s| Arc::new(s) as Arc<dyn VectorStorage>)
+            arc_store
         } else {
             None
         };
@@ -821,5 +826,102 @@ mod tests {
             cfg_hybrid.use_reranker(),
             "HybridProduction should use reranker"
         );
+    }
+
+    #[test]
+    fn test_search_after_reopen_bruteforce() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen_bf.vdb");
+
+        // Insert + search in same session
+        {
+            let mut col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            col.insert(
+                Document::builder("a", "hello")
+                    .embedding(vec![1.0, 0.0])
+                    .build(),
+            )
+            .unwrap();
+            col.insert(
+                Document::builder("b", "world")
+                    .embedding(vec![0.0, 1.0])
+                    .build(),
+            )
+            .unwrap();
+            let r = col.search(&[1.0, 0.0], 2);
+            assert_eq!(r[0].document.id, "a");
+        }
+
+        // Reopen + search (uses mmap)
+        {
+            let col = Collection::open_with(&path, "bruteforce", "cosine").unwrap();
+            assert_eq!(col.len(), 2);
+            let r = col.search(&[1.0, 0.0], 2);
+            assert_eq!(r.len(), 2, "search after reopen should return results");
+            assert_eq!(r[0].document.id, "a");
+        }
+    }
+
+    #[test]
+    fn test_search_after_reopen_hnsw() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen_hnsw.vdb");
+
+        // Insert + search in same session
+        {
+            let mut col = Collection::open_with(&path, "hnsw", "cosine").unwrap();
+            col.insert(
+                Document::builder("a", "hello")
+                    .embedding(vec![1.0, 0.0])
+                    .build(),
+            )
+            .unwrap();
+            col.insert(
+                Document::builder("b", "world")
+                    .embedding(vec![0.0, 1.0])
+                    .build(),
+            )
+            .unwrap();
+            let r = col.search(&[1.0, 0.0], 2);
+            assert_eq!(r[0].document.id, "a");
+        }
+
+        // Reopen + search (uses mmap + graph rebuild)
+        {
+            let col = Collection::open_with(&path, "hnsw", "cosine").unwrap();
+            assert_eq!(col.len(), 2);
+            let r = col.search(&[1.0, 0.0], 2);
+            assert_eq!(r.len(), 2, "search after reopen should return results");
+            assert_eq!(r[0].document.id, "a");
+        }
+    }
+
+    #[test]
+    fn test_search_after_reopen_ivf_pq() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen_ivf.vdb");
+
+        // Insert + search in same session
+        {
+            let mut col = Collection::open_with(&path, "ivf_pq", "cosine").unwrap();
+            for i in 0..20 {
+                col.insert(
+                    Document::builder(format!("d{i}"), format!("doc {i}"))
+                        .embedding(vec![i as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                        .build(),
+                )
+                .unwrap();
+            }
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3);
+            assert!(!r.is_empty());
+        }
+
+        // Reopen + search (uses mmap + index rebuild)
+        {
+            let col = Collection::open_with(&path, "ivf_pq", "cosine").unwrap();
+            assert_eq!(col.len(), 20);
+            let r = col.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3);
+            assert!(!r.is_empty(), "search after reopen should return results");
+        }
     }
 }
