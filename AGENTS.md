@@ -11,9 +11,9 @@ Every line of code must justify its existence. We prefer **50 clear lines** over
 
 ---
 
-## ✅ CURRENT STATUS (2026-06-19)
+## ✅ CURRENT STATUS (2026-06-23)
 
-### Core crate (`dogma-vdb`) — COMPILES and 198 TESTS PASS
+### Core crate (`dogma-vdb`) — COMPILES and 257 TESTS PASS
 
 | Module | File | Lines | Tests | Status |
 |--------|---------|-------|-------|--------|
@@ -23,8 +23,8 @@ Every line of code must justify its existence. We prefer **50 clear lines** over
 | Filter | `src/filter.rs` | 122 | 9 | Complete |
 | Storage (binary) | `src/storage/mod.rs` | ~590 | 20 | Complete, zero-copy mmap |
 | Storage traits | `src/storage/traits.rs` | ~270 | 7 | Complete, `MmapBackedStorage` sub-regions |
-| Collection | `src/collection.rs` | ~780 | 20 | Complete, injectable config |
-| Runtime Config | `src/config.rs` | ~400 | - | Complete |
+| Collection | `src/collection.rs` | ~810 | 20 | Complete, injectable config + SML interceptor |
+| Runtime Config | `src/config.rs` | ~420 | - | Complete (+ StorageStrategy) |
 | Chunker | `src/chunker.rs` | 247 | 8 | Complete |
 | Embedder trait | `src/embedding.rs` | 28 | - | Complete |
 | SmartChunker | `src/smart_chunker/` | ~685 | 20+ | Complete |
@@ -38,6 +38,7 @@ Every line of code must justify its existence. We prefer **50 clear lines** over
 | Index (RRF) | `src/index/rrf.rs` | ~125 | 5 | Complete |
 | K-Means | `src/index/kmeans.rs` | ~207 | 7 | Complete (extracted from IVF-PQ) |
 | SQ module | `src/index/sq.rs` | ~230 | 8 | Complete |
+| SIMIL | `src/sml/` | ~1040 | 31 | Complete (feature = "sml") |
 | Watcher | `src/watch.rs` | ~316 | - | Complete (debounce + batch) |
 
 ### Sub-crates
@@ -88,6 +89,7 @@ If a module grows larger, it gets split.
 - `once_cell` + `toml` + `log` — runtime config
 
 **Optional deps (features):**
+- `sml` → SIMIL ingestion parser (no new deps, uses existing SmartChunker + Embedder)
 - `watch` → `notify` + `crossbeam-channel`
 - `chunker-syntax` → `tree-sitter` + language grammars
 

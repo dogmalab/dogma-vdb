@@ -457,7 +457,7 @@ dogma-vdb is a **local CLI tool / embeddable library**:
 - **Unit tests**: in each module (`#[cfg(test)]`).
 - **Integration tests**: `tests/integration.rs`.
 - **Documentation tests**: doc-tests across all public API.
-- **Total**: 192 tests (192 pass, clippy clean).
+- **Total**: 257 tests (257 pass, clippy clean).
 - **Benchmarks**: exhaustive grid benchmark + benchmark with real ONNX embeddings.
 
 ---

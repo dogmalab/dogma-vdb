@@ -2,17 +2,21 @@
 
 Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
 
-**Status**: v1.0 Beta — core compiles, **192 tests pass**, SIMD-accelerated,
+**Status**: v1.0 Beta — core compiles, **257 tests pass**, SIMD-accelerated,
 binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
 CLI, MCP server, file watcher, FastEmbed ONNX integration,
-Cross-Encoder reranking pipeline, **SmartChunker with 3 strategies**.
+Cross-Encoder reranking pipeline, **SmartChunker with 3 strategies**,
+**SIMIL ingestion parser** (semantic metadata for all documents).
 
 ---
 
 ## 🌟 What's New (Recent Milestones)
 
-The indexing strategy and storage ecosystem have been redesigned:
-
+- **SIMIL ingestion parser** (`feature = "sml"`) — compiles source code and
+  plain text into SIMIL manifests stored in `Document.metadata["sml"]`.
+  Unified semantic layer across all document types.
+- **StorageStrategy** — `Hybrid` (keeps text) or `SymbolicPure` (clears text
+  after SML extraction) for security and compression use cases.
 - **IVF-PQ backend** replaces the retired Annoy index — Product Quantization
   for extreme memory savings (~300 KB for 5K docs, 8× less than HNSW/BF)
 - **`VectorStorage` trait** decouples vector storage from index lifecycle
@@ -83,6 +87,10 @@ operate at maximum speed without alignment faults.
   probe count to favour speed; recall is recovered by the Cross-Encoder pass.
 - **Watch mode**: optional file watcher for auto-reindexing
 - **FastEmbed ONNX**: `FastEmbedder` with all-MiniLM-L6-v2 (384-dim, ~90MB model)
+- **SIMIL ingestion** (`feature = "sml"`): compiles code/text into SIMIL
+  manifests in `Document.metadata["sml"]`. Heuristic + optional semantic inference.
+- **StorageStrategy**: `Hybrid` (keeps text) or `SymbolicPure` (clears text
+  after SML extraction) for privacy and compression.
 - **Pure Rust**: HNSW, IVF-PQ, SQ, reranker are custom implementations
 - **Zero unsafe** in production logic — unsafe blocks strictly isolated to
   byte-conversion in the storage trait
@@ -119,7 +127,8 @@ let chunks = chunker.chunk_text(long_essay, ChunkStrategy::Paragraph);
 | Format | **JSONL + Bin v2** | SQLite+Parquet | Lance columnar | Binary | Binary |
 | Async | **No** (sync) | Sync API | Tokio | Tokio | **No** |
 | Native MCP | ✅ **Yes** | ❌ | ❌ | ❌ | ❌ |
-| Chunking | ✅ 7 strategies | ❌ split_text | ❌ | ❌ | ❌ |
+| Chunking | ✅ 3 strategies | ❌ split_text | ❌ | ❌ | ❌ |
+| SIMIL metadata | ✅ **Yes** | ❌ | ❌ | ❌ | ❌ |
 | mmap ~0ms | ✅ MmapBacked | ❌ | ✅ Lance | ❌ | ❌ |
 | Orthogonal SQ | ✅ Any backend | ❌ | ❌ | ❌ | ❌ |
 | Reranking | ✅ Cross-Encoder | ❌ | ❌ | ❌ | ❌ |
@@ -144,6 +153,23 @@ let results = col.search(&[0.1, 0.2, 0.3], 5);
 
 // Export for debugging
 col.export_jsonl("my_data.jsonl")?;
+```
+
+### With SIMIL ingestion (`feature = "sml"`)
+
+```rust
+use dogma_vdb::prelude::*;
+use dogma_vdb::sml::{SmlCompiler, ingest};
+
+// Compile source code to SIMIL metadata
+let compiler = SmlCompiler::new();
+let metadata = ingest(source_code, "main.rs", &compiler);
+// metadata["sml"] contains the SIMIL manifest
+
+// Or let Collection do it automatically
+let mut col = Collection::open_with("code.vdb", "hnsw", "cosine")?;
+col.insert(Document::new("doc-1", "pub struct Foo { ... }"))?;
+// Document is stored with metadata["sml"] automatically
 ```
 
 ## Benchmarks (5K docs, 128-dim, SIMD on)
@@ -200,6 +226,7 @@ recover recall in the second stage.
 [collection]
 index_type = "hnsw"              # bruteforce | hnsw | ivf_pq
 index_metric = "cosine"          # cosine | dot | euclidean
+storage_strategy = "hybrid"      # hybrid | symbolic_pure
 
 # HNSW
 hnsw_m = 16
@@ -235,6 +262,7 @@ sq_rescore = false
 | Flag | Enables | Deps added |
 |------|---------|-----------|
 | *(default)* | Core | serde, serde_json, thiserror, rayon, wide, bytemuck, memmap2, once_cell, toml, log, regex-lite |
+| `sml` | SIMIL ingestion parser | none (uses existing SmartChunker + Embedder) |
 | `watch` | File watcher | notify, crossbeam-channel |
 
 ---
@@ -333,7 +361,8 @@ export DOGMA_RERANK_TOKENIZER_PATH="models/bge-reranker-base/tokenizer.json"
 
 ```bash
 cargo check --workspace
-cargo test          # 192 tests
+cargo test          # 257 tests
+cargo test --features sml   # 257 tests (including 31 SML tests)
 cargo clippy --all-targets
 cargo fmt --check
 cargo run --release --bin dogma-vdb-benchmarks 2>/dev/null || echo "(benchmarks need data)"

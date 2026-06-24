@@ -1,7 +1,7 @@
 # 🗺️ Architecture Roadmap: dogma-vdb (Next Steps)
 
-> Stable baseline: 8,594 LOC, 192 tests, IVF-PQ Recall@10 = 74% with K-Means++
-> Date: 2026-05-25 | Commit: 0e118c50
+> Stable baseline: 257 tests, IVF-PQ Recall@10 = 74% with K-Means++
+> Date: 2026-06-23 | Commit: bcc75c8
 
 ---
 
@@ -414,11 +414,11 @@ net = ["dep:tonic", "dep:axum", "dep:rmcp"]
 | Metric | Value |
 |--------|:-----:|
 | Total LOC | 8,594 |
-| Tests | 192 pass, 0 fail |
+| Tests | 257 pass, 0 fail |
 | Compilation | 0 errors, 0 warnings |
 | IVF-PQ Recall@10 (real embeddings) | 74.0% |
 | IVF-PQ Latency p50 | 344 μs |
 | K-Means++ | Implemented (D² weighting) |
-| Feature flags | `watch` (off by default) |
+| Feature flags | `sml`, `watch` (off by default) |
 | Storage format | Binary v2 (DVDB), no JSONL |
 | Chunker strategies | 3: Code, Paragraph, FixedWindow |
