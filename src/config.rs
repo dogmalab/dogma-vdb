@@ -99,6 +99,10 @@ pub struct CollectionConfig {
     /// the top `k*2` quantized results to recover recall (default: `false`).
     #[serde(default)]
     pub sq_rescore: bool,
+    /// Controls what is stored per document after SML extraction.
+    /// `Hybrid` keeps the original text; `SymbolicPure` clears it.
+    #[serde(default)]
+    pub storage_strategy: StorageStrategy,
 }
 impl CollectionConfig {
     fn default_path() -> PathBuf {
@@ -168,12 +172,23 @@ impl McpConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
 pub enum McpTransport {
     #[default]
     Stdio,
     Http,
     WebSocket,
+}
+
+/// Controls what is stored per document after SML extraction.
+///
+/// - `Hybrid`: Vector + SML + Original text (default, for RAG).
+/// - `SymbolicPure`: Vector + SML only, text cleared (for security/compression).
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+pub enum StorageStrategy {
+    #[default]
+    Hybrid,
+    SymbolicPure,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -279,6 +294,12 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
             }
             "COLLECTION_SQ" => cfg.collection.sq = val == "true",
             "COLLECTION_SQ_RESCORE" => cfg.collection.sq_rescore = val == "true",
+            "COLLECTION_STORAGE_STRATEGY" => {
+                cfg.collection.storage_strategy = match val.to_lowercase().as_str() {
+                    "symbolic_pure" | "symbolic" => StorageStrategy::SymbolicPure,
+                    _ => StorageStrategy::Hybrid,
+                }
+            }
             _ => {}
         }
     }
@@ -308,6 +329,7 @@ impl Default for Config {
                 ivf_pq_n_probe: 8,
                 sq: false,
                 sq_rescore: false,
+                storage_strategy: StorageStrategy::Hybrid,
             },
             watch: WatchConfig {
                 enabled: false,

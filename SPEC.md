@@ -480,3 +480,97 @@ See `ARCH-SPEC.md` section 12 for detailed post-beta items. Priorities:
 | Low | Parquet export format | Low |
 | Low | CLI REPL mode | Low |
 | Low | Benchmarks in CI | Low |
+
+---
+
+## 23. SIMIL — System Intent Markup Language (v0.5.3)
+
+Metalenguaje de compresión semántica para el modelado de intenciones y
+gestión de contextos. Extensión `.sml`. Usado para definir schemas,
+procesos y flujos de datos de forma concisa.
+
+### 23.1. Filosofía
+
+| Principio | Descripción |
+|-----------|-------------|
+| `Intent_Over_Syntax` | La intención semántica prima sobre el rigor gramatical. |
+| `Token_Economy` | Máxima densidad de información, mínimo peso de tokens. |
+| `Visual_Hierarchy` | La nomenclatura es sintaxis; el estilo define la función. |
+| `Latent_Inference` | El LLM resuelve tipos y dominios mediante conocimiento previo. |
+
+### 23.2. Sintaxis Estructural
+
+| Operador | Nombre | Descripción |
+|----------|--------|-------------|
+| `>` | Intención | Comentario semántico o docstring. |
+| `@` | Atributo | Propiedad de datos (nombres y tipos libres). |
+| `*` | Relación | Referencia o dependencia entre entidades. |
+| `.path` | Navegación | Acceso jerárquico a miembros (`u.name`). |
+| `:value` | Vínculo | Asignación de tipo o comparación de estado. |
+| `---` | Boundary | Delimitador de bloque o cambio de nivel de abstracción. |
+
+### 23.3. Sintaxis Lógica y de Flujo
+
+| Operador | Nombre | Descripción |
+|----------|--------|-------------|
+| `!rule` | Invariante | Restricción obligatoria o ley del sistema. |
+| `~not` | Negación | Inversor lógico de estado o condición. |
+| `&and` | Conjunción | Intersección lógica de condiciones. |
+| `?query` | Evaluación | Condicional para inicio de flujo. |
+| `[min..max]` | Rango | Intervalo inclusivo de valores. |
+| `[*]` | Cuantificador | Aplicación universal (para cada uno). |
+| `->flow` | Acción | Declaración de proceso o transición. |
+| `>>pipe` | Encadenamiento | Pipeline de ejecución secuencial. |
+| `@field?` | Opcionalidad | Indica que el campo puede ser Null. |
+
+### 23.4. Convenciones de Nomenclatura
+
+| Estilo | Uso | Ejemplo |
+|--------|-----|---------|
+| `PascalCase` | Entidades/Tipos | `UserProfile`, `BudgetRequest` |
+| `snake_case` | Atributos/Flujos | `user_id`, `-> process_data` |
+| `SCREAMING_SNAKE` | Estados/Enums | `@status:ACTIVE`, `@role:ADMIN` |
+| `Pascal_Snake` | Directivas/Meta | `! Intent_First`, `! Token_Economy` |
+
+### 23.5. Ejemplos
+
+**Modelado Estructural:**
+```
+type UserAccount
+> "Entidad de gestión de identidad y acceso"
+@username:str!
+@email:str
+@role:Enum[ADMIN, USER, GUEST]
+*profile:UserProfile
+
+! @role:ADMIN >> @access_level:99
+! @username : ~:empty
+```
+
+**Lógica de Procesos:**
+```
+type BackupSystem
+> "Gestión de respaldos locales y remotos"
+@storage_path:path
+@status:Enum[IDLE, RUNNING, ERROR]
+
+-> run_backup(target) :
+   ? @status:IDLE & target.valid >> -> compress_to_zip >> -> update_telemetry
+   ? @status:ERROR >> -> notify_admin >> -> reset_service
+```
+
+**Flujos de Datos Complejos:**
+```
+type DataPipeline
+> "Ingesta y transformación de métricas biométricas"
+
+-> ingest_stream(data) :
+   ? data.type:HEART_RATE >> -> filter_noise >> >> -> store_metric
+   ? data.value > 120 >> -> trigger_alert("High HR")
+```
+
+### 23.6. Integración con dogma-vdb
+
+SIMIL se usará como lenguaje de definición de schemas y procesos
+dentro del proyecto. La capa de funcionalidad que se deriving de
+esta spec se documentará en la sección de roadmap correspondiente.

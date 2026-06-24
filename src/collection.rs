@@ -7,7 +7,7 @@
 //! - `index_type = "bruteforce"` (default) — precise O(n·d) search
 //! - `index_type = "hnsw"` — approximate O(log n) search
 
-use crate::config::{CollectionConfig, CONFIG};
+use crate::config::{CollectionConfig, StorageStrategy, CONFIG};
 use crate::distance::Metric;
 use crate::doc::Document;
 use crate::error::Result;
@@ -37,6 +37,10 @@ pub struct Collection {
     index: Box<dyn Index>,
     /// Zero-copy embedding storage (mmap or memory-backed).
     emb_storage: Option<Arc<dyn VectorStorage>>,
+    /// Controls what is stored per document after SML extraction.
+    storage_strategy: StorageStrategy,
+    #[cfg(feature = "sml")]
+    sml_compiler: Option<crate::sml::SmlCompiler>,
 }
 
 impl Collection {
@@ -72,11 +76,11 @@ impl Collection {
     pub fn open_with_config(path: impl Into<PathBuf>, cfg: &CollectionConfig) -> Result<Self> {
         let path: PathBuf = path.into();
         let index = build_index(cfg)?;
-        Self::build(path, index)
+        Self::build(path, index, cfg)
     }
 
-    /// Internal: build a Collection from a path and a ready index.
-    fn build(path: PathBuf, mut index: Box<dyn Index>) -> Result<Self> {
+    /// Internal: build a Collection from a path, a ready index, and config.
+    fn build(path: PathBuf, mut index: Box<dyn Index>, cfg: &CollectionConfig) -> Result<Self> {
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -104,6 +108,9 @@ impl Collection {
             storage,
             index,
             emb_storage,
+            storage_strategy: cfg.storage_strategy,
+            #[cfg(feature = "sml")]
+            sml_compiler: Some(crate::sml::SmlCompiler::new()),
         })
     }
 
@@ -125,6 +132,21 @@ impl Collection {
 
     /// Insert a single document and persist immediately.
     pub fn insert(&mut self, doc: Document) -> Result<()> {
+        let mut doc = doc;
+
+        #[cfg(feature = "sml")]
+        if let Some(ref compiler) = self.sml_compiler {
+            let sml = crate::sml::ingest(&doc.text, &doc.id, compiler);
+            doc.metadata.extend(sml);
+        }
+
+        match self.storage_strategy {
+            StorageStrategy::Hybrid => {}
+            StorageStrategy::SymbolicPure => {
+                doc.text.clear();
+            }
+        }
+
         self.index.insert(&[doc]);
         self.storage.store(self.index.documents())?;
         Ok(())
@@ -132,7 +154,26 @@ impl Collection {
 
     /// Insert many documents at once.
     pub fn insert_batch(&mut self, docs: &[Document]) -> Result<()> {
-        self.index.insert(docs);
+        let mut docs = docs.to_vec();
+
+        #[cfg(feature = "sml")]
+        if let Some(ref compiler) = self.sml_compiler {
+            for doc in &mut docs {
+                let sml = crate::sml::ingest(&doc.text, &doc.id, compiler);
+                doc.metadata.extend(sml);
+            }
+        }
+
+        match self.storage_strategy {
+            StorageStrategy::Hybrid => {}
+            StorageStrategy::SymbolicPure => {
+                for doc in &mut docs {
+                    doc.text.clear();
+                }
+            }
+        }
+
+        self.index.insert(&docs);
         self.storage.store(self.index.documents())?;
         Ok(())
     }

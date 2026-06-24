@@ -38,6 +38,9 @@ pub mod rerank;
 pub mod smart_chunker;
 pub mod storage;
 
+#[cfg(feature = "sml")]
+pub mod sml;
+
 #[cfg(feature = "watch")]
 pub mod watch;
 
@@ -55,4 +58,6 @@ pub mod prelude {
     pub use crate::index::{
         BruteForceIndex, HnswConfig, HnswIndex, Index, IvfPqConfig, IvfPqIndex, ScoredDocument,
     };
+    #[cfg(feature = "sml")]
+    pub use crate::sml::SmlCompiler;
 }

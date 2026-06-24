@@ -12,6 +12,7 @@ categories = ["database", "science", "wasm"]
 
 [features]
 default = []
+sml = []
 watch = ["dep:notify", "dep:crossbeam-channel"]
 chunker-syntax = [
     "dep:tree-sitter",
