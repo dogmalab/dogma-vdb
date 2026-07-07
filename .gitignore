@@ -2,7 +2,7 @@
 /target/
 /.bench-env/
 /.fastembed_cache/
-Cargo.lock
+
 
 # IDE
 .idea/

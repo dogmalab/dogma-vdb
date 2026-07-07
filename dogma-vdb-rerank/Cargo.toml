@@ -10,12 +10,16 @@ serde = { version = "1.0", features = ["derive"] }
 
 # ONNX Runtime for Rust — Cross-Encoder inference
 #
-# NOTE: `download-binaries` and `ureq` are deliberately DISABLED.
-# The ort-sys transitive dep (2.0.0-rc.12) pulls ureq 3.x which
-# has an unresolvable TLS-feature issue on CI. Models are
-# expected to be pre-downloaded by the user, and HTTP fetching
-# is not needed for inference-only mode.
+# Pinned to exact versions to avoid ort-sys 2.0.0-rc.12 which has
+# ureq 3.x as a HARD (non-optional) dependency — that version of
+# ureq requires a TLS feature for its build script to compile, and
+# the feature unification doesn't propagate to transitive deps.
+#
+# ort-sys 2.0.0-rc.9 does NOT have ureq as a hard dep, so it works.
+# We also disable `download-binaries` and `ureq` features since
+# inference-only mode doesn't need HTTP model fetching.
 ort = { version = "=2.0.0-rc.9", features = ["ndarray"] }
+ort-sys = "=2.0.0-rc.9"
 
 # ndarray for tensor construction (re-exported by ort but needed directly)
 ndarray = "0.16"
