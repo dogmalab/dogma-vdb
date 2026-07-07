@@ -35,7 +35,7 @@ impl From<PyMetric> for dogma_vdb::distance::Metric {
 // ---------------------------------------------------------------------------
 
 /// A document with text, embedding, and metadata.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyDocument {
     #[pyo3(get)]
@@ -110,7 +110,7 @@ impl From<dogma_vdb::doc::Document> for PyDocument {
 // ---------------------------------------------------------------------------
 
 /// A search result: document + relevance score.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyScoredDocument {
     #[pyo3(get)]

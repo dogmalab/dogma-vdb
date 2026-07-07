@@ -1,26 +1,9 @@
 # cargo-deny configuration.
 # Install: cargo install cargo-deny
 # Run:     cargo deny check
-
-# Use minimal config — cargo-deny 0.19+ uses different field names
-# for advisory severity levels. The defaults are conservative enough.
-
-[advisories]
-ignore = []
-
-[licenses]
-unlicensed = "deny"
-allow = [
-    "MIT",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
-    "Unicode-DFS-2016",
-    "Zlib",
-    "0BSD",
-    "OpenSSL",
-]
+#
+# Minimal config — let cargo-deny 0.19+ use its defaults for advisories
+# and licenses. Only configure bans and sources.
 
 [bans]
 multiple-versions = "warn"
