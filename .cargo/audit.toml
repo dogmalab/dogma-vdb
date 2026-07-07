@@ -2,4 +2,8 @@
 # Run with: cargo audit
 
 [advisories]
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2025-0009", reason = "ring AES overflow only in debug mode; ring 0.17.12+ requires cc >= 1.0.91 which conflicts with tree-sitter-javascript 0.21.4" },
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained — transitive dep of indicatif; no replacement without updating fastembed" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained — transitive dep of pyo3-macros-backend; no replacement without updating pyo3" },
+]
