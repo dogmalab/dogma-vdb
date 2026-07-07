@@ -2,11 +2,10 @@
 # Install: cargo install cargo-deny
 # Run:     cargo deny check
 
+# Use minimal config — cargo-deny 0.19+ uses different field names
+# for advisory severity levels. The defaults are conservative enough.
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
 ignore = []
 
 [licenses]
