@@ -11,8 +11,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// Distance metric for vector search.
-#[allow(deprecated)]
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, skip_from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyMetric {
     Cosine = 0,
