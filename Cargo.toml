@@ -48,10 +48,12 @@ toml         = "0.8"
 log          = "0.4"
 
 # HTTP client with TLS — declared at the workspace root so that
-# feature unification propagates `rustls` to every transitive
-# consumer (notably `ort`, which uses `ureq` internally for
-# its `download-binaries` feature).
-ureq         = { version = "3", default-features = false, features = ["rustls"] }
+# feature unification propagates TLS to every transitive consumer.
+#
+# We use ureq 2.x because `ort 2.0.0-rc.9` (used by `dogma-vdb-rerank`)
+# depends on `ureq ^2.1`. Pinning to 3.x would force a major-version
+# conflict. The `tls` feature enables native-TLS for ureq 2.x.
+ureq         = { version = "2", default-features = false, features = ["tls", "json"] }
 
 # Watcher (opcional)
 notify              = { version = "8", features = ["crossbeam-channel"], optional = true }
