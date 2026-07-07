@@ -1,342 +1,287 @@
 # AGENTS.md — Rules for Implementing dogma-vdb
 
-## Project Philosophy
+> The state harness of the [Dogma](https://github.com/dogmalab/.github) platform.
+
+This document contains the **harness-specific** rules for working on
+`dogma-vdb`. The general rules of the platform — the Four Questions,
+the contribution process, the security reporting flow — live in the
+org-level [CONTRIBUTING.md](https://github.com/dogmalab/.github/blob/main/CONTRIBUTING.md).
+The why behind these rules is in the
+[MANIFESTO.md](https://github.com/dogmalab/.github/blob/main/MANIFESTO.md).
+
+If a rule from this file conflicts with a rule from the org-level
+docs, the org-level docs win. If a rule here is missing from the
+org-level docs, that is a bug — open an issue to fix it.
+
+---
+
+## Project philosophy
 
 ```
 dogma-vdb = Rust + JSONL + serde_json
             (min deps, portable, no server)
 ```
 
-Every line of code must justify its existence. We prefer **50 clear lines** over 200 "architecturally flexible" lines.
+Every line of code must justify its existence. We prefer **50 clear
+lines** over 200 "architecturally flexible" lines. The state harness
+is a library that other harnesses depend on. Complexity in the state
+harness is a tax on every pattern that composes it.
 
 ---
 
-## ✅ CURRENT STATUS (2026-06-23)
+## Current status (2026-06-23)
 
-### Core crate (`dogma-vdb`) — COMPILES and 257 TESTS PASS
+### Core crate (`dogma-vdb`)
 
-| Module | File | Lines | Tests | Status |
-|--------|---------|-------|-------|--------|
-| Document | `src/doc.rs` | ~210 | 8 | Complete, `#[must_use]` |
-| Error | `src/error.rs` | ~50 | - | Complete (+ `IncompatibleVersion`) |
-| Distance | `src/distance.rs` | 209 | 16 | Complete |
-| Filter | `src/filter.rs` | 122 | 9 | Complete |
-| Storage (binary) | `src/storage/mod.rs` | ~590 | 20 | Complete, zero-copy mmap |
-| Storage traits | `src/storage/traits.rs` | ~270 | 7 | Complete, `MmapBackedStorage` sub-regions |
-| Collection | `src/collection.rs` | ~810 | 20 | Complete, injectable config + SML interceptor |
-| Runtime Config | `src/config.rs` | ~420 | - | Complete (+ StorageStrategy) |
-| Chunker | `src/chunker.rs` | 247 | 8 | Complete |
-| Embedder trait | `src/embedding.rs` | 28 | - | Complete |
-| SmartChunker | `src/smart_chunker/` | ~685 | 20+ | Complete |
-| Memory guard | `src/memory.rs` | ~170 | 4 | Complete (Linux-only, English) |
-| Reranker trait | `src/rerank.rs` | 69 | 2 | Complete |
-| Index trait | `src/index/mod.rs` | ~115 | - | Complete (+ `save`/`load`) |
-| Index (BruteForce) | `src/index/brute_force.rs` | ~516 | 18 | Complete, `#[must_use]` |
-| Index (HNSW) | `src/index/hnsw.rs` | ~1055 | 21 | Complete |
-| Index (IVF-PQ) | `src/index/ivf_pq.rs` | ~1100 | 21 | Complete, tombstone delete |
-| Index (BM25) | `src/index/bm25.rs` | ~267 | 7 | Complete |
-| Index (RRF) | `src/index/rrf.rs` | ~125 | 5 | Complete |
-| K-Means | `src/index/kmeans.rs` | ~207 | 7 | Complete (extracted from IVF-PQ) |
-| SQ module | `src/index/sq.rs` | ~230 | 8 | Complete |
-| SIMIL | `src/sml/` | ~1040 | 31 | Complete (feature = "sml") |
-| Watcher | `src/watch.rs` | ~316 | - | Complete (debounce + batch) |
+| Module | File | Lines | Tests |
+|---|---|---|---|
+| Document | `src/doc.rs` | ~210 | 8 |
+| Error | `src/error.rs` | ~50 | - |
+| Distance | `src/distance.rs` | 209 | 16 |
+| Filter | `src/filter.rs` | 122 | 9 |
+| Storage (binary) | `src/storage/mod.rs` | ~590 | 20 |
+| Storage traits | `src/storage/traits.rs` | ~270 | 7 |
+| Collection | `src/collection.rs` | ~810 | 20 |
+| Runtime Config | `src/config.rs` | ~420 | - |
+| Chunker | `src/chunker.rs` | 247 | 8 |
+| Embedder trait | `src/embedding.rs` | 28 | - |
+| SmartChunker | `src/smart_chunker/` | ~685 | 20+ |
+| Memory guard | `src/memory.rs` | ~170 | 4 |
+| Reranker trait | `src/rerank.rs` | 69 | 2 |
+| Index trait | `src/index/mod.rs` | ~115 | - |
+| Index (BruteForce) | `src/index/brute_force.rs` | ~516 | 18 |
+| Index (HNSW) | `src/index/hnsw.rs` | ~1055 | 21 |
+| Index (IVF-PQ) | `src/index/ivf_pq.rs` | ~1100 | 21 |
+| Index (BM25) | `src/index/bm25.rs` | ~267 | 7 |
+| Index (RRF) | `src/index/rrf.rs` | ~125 | 5 |
+| K-Means | `src/index/kmeans.rs` | ~207 | 7 |
+| SQ module | `src/index/sq.rs` | ~230 | 8 |
+| SIMIL | `src/sml/` | ~1040 | 31 |
+| Watcher | `src/watch.rs` | ~316 | - |
 
 ### Sub-crates
 
-| Crate | File | Status |
-|-------|---------|--------|
-| `dogma-vdb-cli` | `cli/src/main.rs` | Complete (+ `rag` feature flag) |
-| `dogma-vdb-mcp` | `mcp/src/main.rs` | Complete (vecdb_query, ingest, delete, list, info) |
-| `dogma-vdb-embed` | `embed/src/lib.rs` | Complete (trait definition) |
-| `dogma-vdb-embed-fastembed` | `embed-fastembed/src/lib.rs` | Complete (FastEmbedder with ONNX MiniLM-L6-v2) |
-| `dogma-vdb-rerank` | `rerank/src/lib.rs` | Complete (OnnxReranker) |
-| `dogma-vdb-rag` | `rag/src/main.rs` | Complete (kept for backward compat) |
+| Crate | Status |
+|---|---|
+| `dogma-vdb-cli` | Complete (+ `rag` feature flag) |
+| `dogma-vdb-mcp` | Complete (vecdb_query, ingest, delete, list, info) |
+| `dogma-vdb-embed` | Complete (trait definition) |
+| `dogma-vdb-embed-fastembed` | Complete (FastEmbedder with ONNX MiniLM-L6-v2) |
+| `dogma-vdb-rerank` | Complete (OnnxReranker) |
+| `dogma-vdb-rag` | Complete (kept for backward compat) |
 
 ### Tests
+
 - Unit: 181 pass
 - Integration: 8 pass
 - Doc-tests: 9 pass, 3 ignored
 - **Total: 198 tests, 0 failures**
 
+The README's headline "257 tests" is a marketing figure from an
+earlier snapshot. The authoritative number is the one above, and
+it is updated as part of every release.
+
 ---
 
-## ✅ What We DO
+## Harness-specific rules
 
-### 1. Idiomatic Rust — no fluff
+These are the rules that apply to `dogma-vdb` and not necessarily
+to the other harnesses. The general rules — formatting, English
+comments, no premature abstraction, code style — live in
+[CONTRIBUTING.md](https://github.com/dogmalab/.github/blob/main/CONTRIBUTING.md#code-style-per-harness).
 
-- **Ownership first**. Borrow (`&`) by default, owned (`T`) only when the callee needs ownership.
-- **`Into<T>` in constructors** for zero-cost flexibility.
-- **`impl Trait` in parameters** (monomorphization) instead of `Box<dyn Trait>` unless you need real dynamic dispatch.
-- **`sort_unstable`** over `sort`. We don't need stability.
-- **`#[inline]`** only in 1-3 line functions that are in hotspots (distances, dot product).
-- **`debug_assert_eq!`** for preconditions that should only be checked in debug mode.
+### 1. No async in the core
 
-### 2. Small code — each file < 300 lines
+The state harness is a library. The user calls it from their code.
+If their code is sync, the state harness blocks. If their code is
+async, the state harness waits. Adding async to the core would
+force every caller to think about async.
 
-Maximum 300 lines per file (with exceptions for test-heavy files:
-`storage.rs` 307, `smart_chunker/mod.rs` 536 which includes ~200 lines of tests).
-If a module grows larger, it gets split.
+The state harness is a database. SQLite is sync. RocksDB is sync.
+The state harness is sync. Async belongs in the agent harness and
+the network harness, where it talks to LLMs and HTTP clients.
 
-### 3. Minimal dependencies — ask before adding
+### 2. No `unsafe` in production logic, with one exception
 
-**Required core deps (currently):**
+`#![deny(unsafe_code)]` is set at the crate root. The only `unsafe`
+blocks allowed are in `src/storage/traits.rs` for byte reinterpret
+between `Vec<f32>` and `&[u8]`. These are documented, isolated, and
+covered by tests. The byte reinterpret is the foundation of the
+binary v2 mmap format; without it, the `MmapBackedStorage` cold
+start would be impossible.
+
+The current count is **5** `unsafe` blocks across the codebase.
+The improvement plan is to consolidate them into a single
+`mmap_file()` helper. See
+[`docs/plans/2026-06-05-dogma-improvement-plan.md`](./docs/plans/2026-06-05-dogma-improvement-plan.md).
+
+### 3. JSONL is the source of truth
+
+The binary v2 mmap format is a cache. Every `Collection` can be
+re-exported to JSONL and re-read. The two are synchronized on every
+write. This is the **JSONL/Binary duality** that lets `cat`,
+`grep`, and `jq` work on state harness files without any tool from
+the state harness itself.
+
+### 4. File size limit: 300 lines
+
+No file in the state harness exceeds 300 lines (with documented
+exceptions for test-heavy files: `storage.rs` 307, `smart_chunker/mod.rs`
+536 which includes ~200 lines of tests). When a module grows past
+this, it is split.
+
+### 5. Minimal core dependencies
+
+The state harness core has 11 dependencies:
+
 - `serde` + `serde_json` + `thiserror` — essential
-- `regex-lite` — smart chunker (regex lightweight)
+- `regex-lite` — smart chunker
 - `rayon` — parallel iteration
 - `wide` — SIMD-accelerated dot product / distance
 - `bytemuck` — safe f32<->[u8] reinterpret
 - `memmap2` — zero-copy memory-mapped I/O
 - `once_cell` + `toml` + `log` — runtime config
 
-**Optional deps (features):**
-- `sml` → SIMIL ingestion parser (no new deps, uses existing SmartChunker + Embedder)
+Adding any of these to core requires a strong case in an issue.
+Optional features may add more:
+
+- `sml` → SIMIL ingestion parser (no new deps, uses existing tools)
 - `watch` → `notify` + `crossbeam-channel`
 - `chunker-syntax` → `tree-sitter` + language grammars
+- `mcp` → `rmcp`, `tokio`, `tracing`, `clap`
+- `cli` → `clap`, `tracing`, `tokio`
 
-### 4. Testing from the start
+### 6. No new dependencies in core without an RFC
 
-- Every module has `#[cfg(test)] mod tests` at the end.
-- Integration tests in `tests/` use real temporary files.
-- Tests must pass **without network** or external services.
-- All new tests must compile and pass in CI.
+Per the org-level [CONTRIBUTING.md](https://github.com/dogmalab/.github/blob/main/CONTRIBUTING.md),
+every new dependency in core requires a `[rfc]` issue with a
+written justification. Adding a dependency is a long-term commitment
+to maintenance, security updates, and supply-chain risk.
 
-### 5. JSONL Format — the center of the design
+### 7. ANN rules (HNSW, IVF-PQ)
 
-```
-.vdb file
-├── Line 1: {"id":"doc-1","text":"...","embedding":[0.1,...],"metadata":{...}}
-├── Line 2: {"id":"doc-2","text":"...","embedding":[...],"metadata":{...}}
-└── ...
-```
+The approximate indexes complement `BruteForceIndex` without
+replacing it:
 
-- **Each line is independent** — can use `grep`, `sed`, `head`.
-- **Append-only** by design — appending is O(1). Updating requires rewriting.
-- **`serde_json::from_str`** line by line (streaming with BufReader).
+- **Pure Rust implementation** — no external ANN libraries.
+- **Same API** — implements the existing `Index` trait.
+- **Configurable parameters** — `HnswConfig`, `IvfPqConfig` are
+  documented in [`ARCH-SPEC.md`](./ARCH-SPEC.md).
+- **Predictable memory** — documented per-index in `ARCH-SPEC.md`.
 
-### 6. Small and focused traits
+We do not compete with ScaNN on recall at the 1M-vector scale. We
+compete on portability, inspectability, and "the file is the
+service". If your use case needs ScaNN-class recall, you are not
+the target audience; please use ScaNN directly.
 
-```rust
-pub trait Embedder: Send + Sync {
-    fn embed(&self, text: &str) -> Result<Vec<f32>>;
-    fn dimension(&self) -> usize;
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> { /* default */ }
-}
-```
+### 8. SIGBUS awareness in `MmapBackedStorage`
 
-### 7. Useful documentation
+When a file is mmap'd and the underlying file is truncated, the
+process receives a SIGBUS on the next access. The state harness
+documents this in the `MmapBackedStorage` API; users are expected
+to treat the mmap as read-only while the process is running.
+See the [README section](./README.md#cold-load-instant-0ms-via-mmap)
+for the full warning.
 
-- `///` with usage examples across the entire public API.
-- `# Examples` in docstrings (run with `cargo test --doc`).
-- `#[must_use]` on functions whose result should not be ignored.
+### 9. English-only comments
 
-### 8. Comments in English, minimal, purposeful
-
-- **All comments must be in English.** No Spanish, no mixed-language comments.
-- **Reduce comments to the minimum necessary.** The code should speak about the application, not the comments. Every comment must justify its existence — if the code is self-explanatory, delete the comment.
-- `//` comments document *why*, not *what*. Let types, variable names, and function signatures express *what*.
-- `///` doc comments document the public API for consumers. They are not the place for implementation notes.
+All comments in the state harness are in English. The historical
+exception is a small number of older modules where Spanish comments
+were left in place from earlier authorship. New code must be in
+English. See the org-level CONTRIBUTING for the rationale.
 
 ---
 
-## ❌ What We DON'T Do
+## How we evaluate new code
 
-### 1. DON'T add dependencies to core without discussing it
+The five gates, in order:
 
-If someone wants to just read `.vdb` files without async or HTTP, they should be able to do so with minimal deps.
+1. **Compiles** with `cargo check --all-features`.
+2. **Clippy clean** with `cargo clippy --all-features -- -D warnings`.
+3. **Tests pass** with `cargo test --all-features`.
+4. **No new dependencies** in core (or justified in an `[rfc]`).
+5. **Correct formatting** with `cargo fmt --all -- --check`.
 
-### 2. No premature abstraction
-
-```rust
-// WRONG — abstracting for the sake of abstraction
-trait DistanceCalculator { fn compute(&self, a: &[f32], b: &[f32]) -> f32; }
-
-// RIGHT — a concrete, reusable function
-pub fn cosine(a: &[f32], b: &[f32]) -> f32;
-```
-
-We start with `BruteForceIndex` and if HNSW is needed later, it gets added as another implementor of the `Index` trait.
-
-### 3. DON'T clone unnecessarily
-
-```rust
-// WRONG
-fn search(&self, query: Vec<f32>) -> Vec<Document> { let query = query.clone(); ... }
-
-// RIGHT
-fn search(&self, query: &[f32]) -> Vec<ScoredDocument>;
-```
-
-### 4. DON'T unwrap() in production
-
-```rust
-// WRONG
-let doc = docs.iter().find(|d| d.id == "x").unwrap();
-
-// RIGHT
-let doc = docs.iter().find(|d| d.id == "x")
-    .ok_or_else(|| Error::DocumentNotFound("x".into()))?;
-```
-
-`unwrap()` only in tests and examples.
-
-### 5. No over-engineered structures
-
-- No `async` in the core. If async is needed, it goes in the `mcp` or `cli` crate.
-- No procedural macros.
-- No `unsafe` unless strictly necessary and measured.
-- No unnecessary generics.
-
-### 6. DON'T ignore clippy warnings
-
-CI fails with `-D warnings`. Silencing warnings with `#[allow(...)]` only if there is a justified and documented reason.
-
-### 7. DON'T write comments that repeat the code
-
-```rust
-// WRONG — comment repeats what the code already says
-// Increment the counter by one
-counter += 1;
-
-// RIGHT — comment explains why, not what
-// Skip padding bytes added by the serializer
-offset += ALIGNMENT_PAD;
-```
-
-### 8. ANN Index (HNSW) — rules
-
-The approximate index complements `BruteForceIndex` without replacing it:
-
-- **Pure Rust implementation** — no new external dependencies
-- **Same API** — implements the existing `Index` trait
-- **Configurable parameters** in `HnswConfig`: `M` (connections), `ef_construction` (build quality), `ef_search` (query quality)
-- **Predictable memory**: each node stores its vector + neighbors per layer
-- **`ef_search` controls the trade-off**: higher value = more recall, less speed
-- **Collection can use either**: injected via `HnswConfig` instead of `Metric`
-
-```rust
-let mut index = HnswIndex::new(HnswConfig {
-    M: 16,
-    ef_construction: 200,
-    ef_search: 50,
-    metric: Metric::Cosine,
-});
-index.insert(&docs);
-let results = index.search(&query, 10);
-```
-
-Expected performance vs BruteForce:
-
-| Dataset | BruteForce | HNSW (ef=50) | HNSW (ef=200) |
-|---------|-----------|--------------|---------------|
-| 1K      | 0.5ms     | 0.2ms        | 0.5ms         |
-| 10K     | 5ms       | 0.5ms        | 2ms           |
-| 100K    | 50ms      | 1ms          | 5ms           |
-| 1M      | 500ms     | 3ms          | 15ms          |
-| Recall  | 100%      | ~90-95%      | ~98-99%       |
+If everything passes, the code can be merged. If something fails,
+fix it locally before opening a PR. CI runs the same checks.
 
 ---
 
-## Tools We Have
+## What we DON'T do
 
-### From core (always available)
+These are the state-harness-specific anti-rules. The platform-level
+anti-rules are in the
+[MANIFESTO.md](https://github.com/dogmalab/.github/blob/main/MANIFESTO.md#what-we-are-not).
 
-| Tool | Purpose |
-|---|---|
-| `std::fs` | Read/write .vdb files |
-| `std::io::{BufReader, BufWriter}` | Streaming line by line |
-| `std::collections::HashMap` | Document metadata |
-| `serde_json` | Serialize/deserialize JSONL |
-| `thiserror` | Typed errors |
-| `regex_lite` | Smart chunking by file type |
-
-### From Rust stdlib (no extra dependencies)
-
-```rust
-f32::sqrt()          // → vector magnitude
-f32::powi()          // → euclidean distance
-f32::abs()           // → tolerances
-.iter().zip()        // → dot product
-.map().sum()         // → sum of products
-.sort_unstable_by()  // → sort by score
-File::open()         // → read .vdb
-File::create()       // → write .vdb
-OpenOptions::append()// → append to .vdb
-Path::exists()       // → does the file exist?
-Path::extension()    // → filter by extension
-Path::file_stem()    // → collection name
-```
-
-### With optional features
-
-| Feature | Extra tools |
-|---|---|
-| `watch` | `notify` (inotify/kqueue), `crossbeam-channel` |
-| `mcp` | `rmcp`, `tokio`, `tracing`, `clap` |
+- **No server mode.** A long-running HTTP server fronting the state
+  harness. Breaks the "one file, no daemon" promise.
+- **No new mandatory dependencies.** Every new dep is opt-in via a
+  feature flag.
+- **No async in core.** See rule 1.
+- **No `unsafe` outside `storage/traits.rs`.** See rule 2.
+- **No client/server API.** The state harness is a library, not a
+  service. The network harness is the service.
+- **No automatic schema migration.** The binary v2 format version
+  is checked on load; incompatible versions return
+  `Error::IncompatibleVersion`. Manual migration is the user's
+  choice.
 
 ---
 
-## Typical Module Structure
+## Roadmap (state-harness-specific)
 
-```rust
-//! 1. One-line docstring with the purpose.
+The platform-level roadmap is in the org-level
+[ROADMAP.md](https://github.com/dogmalab/.github/blob/main/ROADMAP.md).
+This section lists the items specific to the state harness that
+are in flight or recently shipped.
 
-// 2. Grouped imports: stdlib, external, crate
-use std::path::PathBuf;
-use crate::error::Result;
+### Recently shipped
 
-// 3. Public types (struct, enum, trait)
-pub struct Foo { ... }
-pub trait Bar { ... }
+- [x] SIMIL ingestion parser (`feature = "sml"`)
+- [x] StorageStrategy (`Hybrid` and `SymbolicPure`)
+- [x] IVF-PQ with SIMD-aligned `m_subspaces`
+- [x] HNSW+SQ recall fix (0-60% → 90% with rescore)
+- [x] `VectorStorage` trait decoupling
+- [x] `MmapBackedStorage` (memory-mapped zero-copy, ~0ms cold start)
+- [x] Binary v2 format (32-byte AVX2 alignment)
 
-// 4. Implementations
-impl Foo { ... }
-impl Bar for Foo { ... }
+### In flight
 
-// 5. Public helper functions (if applicable)
-pub fn helper() { ... }
+- [ ] Multi-file collections (one `.vdb` directory per collection)
+- [ ] Streaming JSONL export for large collections
+- [ ] Parquet export as an opt-in (for migration from other systems)
 
-// 6. Tests (at end of file)
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_foo() { ... }
-}
-```
+### Queued (post-MVP)
 
----
+- [ ] `dogma-vdb-mcp` over HTTP/SSE (feature flag, not core)
+- [ ] Fuzz testing of the JSONL parser
+- [ ] In-place update of documents (currently requires delete + insert)
+- [ ] Multi-index search (run query against BF + HNSW + IVF-PQ, RRF)
 
-## How We Evaluate New Code
+### Rejected
 
-1. **Compiles with `cargo check --all-features`** ✅
-2. **No clippy errors** (`cargo clippy --all-features -- -D warnings`) ✅
-3. **Tests pass** (`cargo test --all-features`) ✅
-4. **No new dependencies** in core (or justified) ✅
-5. **Correct formatting** (`cargo fmt --all -- --check`) ✅
-
-If everything passes, the code can be merged.
+- ❌ Server mode. See "What we DON'T do".
+- ❌ Compete with ScaNN. See rule 7.
+- ❌ Replace JSONL with Parquet. The duality is the point.
+- ❌ Auto-tune `HnswConfig` at runtime. The user configures.
 
 ---
 
-## Pending (Roadmap)
+## See also
 
-- [x] Implement HNSW index (`src/index/hnsw.rs`)
-- [x] Collection can use HNSW via config
-- [x] Full CRUD (insert, delete, update)
-- [x] CLI (info, list, query, ingest, delete)
-- [x] MCP server (vecdb_query, ingest, delete, list, info)
-- [x] Comparative benchmarks (all backends)
-- [x] HNSW flat_embeddings
-- [x] SQ module + integration in BF and HNSW
-- [x] SQ rescore (recover recall with f32)
-- [x] IVF-PQ index (inverted file + product quantization)
-- [x] Config env vars for all fields
-- [x] Implement `watch.rs` (file system watcher, feature = "watch")
-- [x] Implement `mcp.rs` (MCP server, feature = "mcp")
-- [x] Implement real FastEmbed (`dogma-vdb-embed-fastembed`)
-- [x] Multi-crate workspace (root Cargo.toml)
-- [x] Complete examples in `examples/`
+- [README.md](./README.md) — the public-facing documentation.
+- [SPEC.md](./SPEC.md) — the formal specification.
+- [ARCH-SPEC.md](./ARCH-SPEC.md) — architecture decisions.
+- [RCA_GUIDE.md](./RCA_GUIDE.md) — how we audit our own benchmarks.
+- [docs/FEATURES.md](./docs/FEATURES.md) — feature reference.
+- Org-level docs:
+  [MANIFESTO](https://github.com/dogmalab/.github/blob/main/MANIFESTO.md),
+  [STRATEGY](https://github.com/dogmalab/.github/blob/main/STRATEGY.md),
+  [CONTRIBUTING](https://github.com/dogmalab/.github/blob/main/CONTRIBUTING.md),
+  [FAQ](https://github.com/dogmalab/.github/blob/main/FAQ.md),
+  [ROADMAP](https://github.com/dogmalab/.github/blob/main/ROADMAP.md),
+  [GLOSSARY](https://github.com/dogmalab/.github/blob/main/GLOSSARY.md).
 
 ---
 
-*Last updated: 2026-06-19*
+*Last updated: 2026-07-07*

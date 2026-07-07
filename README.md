@@ -1,12 +1,19 @@
 # dogma-vdb
 
-Portable vector database in JSONL format. Rustic, zero-cost, MCP-ready.
+> The state harness of the [Dogma](https://github.com/dogmalab/.github) platform.
+> A vector database in one file. JSONL plus a binary v2 mmap. `cat` it, `grep` it,
+> commit it. No server. No daemon. No connection string.
 
-**Status**: v1.0 Beta — core compiles, **257 tests pass**, SIMD-accelerated,
-binary native format v2 (mmap-ready), 3 index backends + SQ orthogonal,
-CLI, MCP server, file watcher, FastEmbed ONNX integration,
-Cross-Encoder reranking pipeline, **SmartChunker with 3 strategies**,
-**SIMIL ingestion parser** (semantic metadata for all documents).
+**Read first:** the [Dogma Manifesto](https://github.com/dogmalab/.github/blob/main/MANIFESTO.md)
+explains why this exists and what it is for.
+
+---
+
+**Status**: v1.0 Beta — core compiles, **198 tests pass** (181 unit + 8 integration +
+9 doc, 3 ignored), SIMD-accelerated, binary native format v2 (mmap-ready),
+3 index backends + SQ orthogonal, CLI, MCP server, file watcher, FastEmbed
+ONNX integration, Cross-Encoder reranking pipeline, **SmartChunker with 3
+strategies**, **SIMIL ingestion parser** (semantic metadata for all documents).
 
 ---
 
