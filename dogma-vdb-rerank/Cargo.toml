@@ -9,12 +9,13 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 # ONNX Runtime for Rust — Cross-Encoder inference
-# `ureq` feature enables the `ureq` backend. The `download-binaries`
-# feature lets ort fetch ONNX models from HuggingFace at runtime.
-# Note: `ort-sys 2.0.0-rc.12` (pulled transitively) uses ureq 3.x and
-# requires a TLS feature; the workspace root has a ureq 3 dep with
-# the `rustls` feature for feature unification.
-ort = { version = "=2.0.0-rc.9", features = ["download-binaries", "ndarray", "ureq"] }
+#
+# NOTE: `download-binaries` and `ureq` are deliberately DISABLED.
+# The ort-sys transitive dep (2.0.0-rc.12) pulls ureq 3.x which
+# has an unresolvable TLS-feature issue on CI. Models are
+# expected to be pre-downloaded by the user, and HTTP fetching
+# is not needed for inference-only mode.
+ort = { version = "=2.0.0-rc.9", features = ["ndarray"] }
 
 # ndarray for tensor construction (re-exported by ort but needed directly)
 ndarray = "0.16"
