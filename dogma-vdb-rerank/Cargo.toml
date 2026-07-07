@@ -21,11 +21,5 @@ tokenizers = "0.15"
 # Parallel batch inference
 rayon = "1"
 
-# HTTP client with TLS — required by `ort`'s `download-binaries`
-# feature to fetch ONNX models from HuggingFace. The `rustls`
-# feature uses the `ring` crypto provider (no native OpenSSL
-# dependency).
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-
 # Logging
 log = "0.4"
