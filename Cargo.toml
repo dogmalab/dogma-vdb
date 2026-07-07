@@ -50,10 +50,14 @@ log          = "0.4"
 # HTTP client with TLS — declared at the workspace root so that
 # feature unification propagates TLS to every transitive consumer.
 #
-# We use ureq 2.x because `ort 2.0.0-rc.9` (used by `dogma-vdb-rerank`)
-# depends on `ureq ^2.1`. Pinning to 3.x would force a major-version
-# conflict. The `tls` feature enables native-TLS for ureq 2.x.
+# Two versions of ureq are pulled by the workspace:
+# - `ureq 2.x` — used by `fastembed` (via `hf-hub`) and by `ort 2.0.0-rc.9`
+#   itself. The `tls` feature enables native-TLS.
+# - `ureq 3.x` — used by `ort-sys 2.0.0-rc.12` (pulled transitively).
+#   The `rustls` feature enables the `_tls` internal module that the
+#   ort build script requires.
 ureq         = { version = "2", default-features = false, features = ["tls", "json"] }
+ureq-v3      = { package = "ureq", version = "3", default-features = false, features = ["rustls"] }
 
 # Watcher (opcional)
 notify              = { version = "8", features = ["crossbeam-channel"], optional = true }
